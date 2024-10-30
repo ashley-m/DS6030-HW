@@ -1,0 +1,314 @@
+---
+title: "Homework #1: Supervised Learning"
+author: "**Ashley Miller**"
+format: ds6030hw-html
+---
+
+
+```{r config}
+#| include: false
+# Set global configurations and settings here
+knitr::opts_chunk$set()                 # set global chunk options
+ggplot2::theme_set(ggplot2::theme_bw()) # set ggplot2 theme
+```
+
+
+# Required R packages and Directories  {.unnumbered .unlisted}
+
+```{r packages}
+#| message: false
+#| warning: false
+library(tidyverse) # functions for data manipulation
+```
+
+
+# Problem 1: Evaluating a Regression Model
+
+## a. Data generating functions
+Create a set of functions to generate data from the following distributions:
+
+\begin{align*}
+X &\sim \mathcal{N}(0, 1) \\
+Y &= -1 + .5X + .2X^2 + \epsilon \\
+\epsilon &\sim \mathcal{N}(0,\, \sigma)
+\end{align*}
+
+
+::: {.callout-note title="Solution"}
+```{r}
+sim_x <- function(n) rnorm(n, 0, 1)
+f <- function(x) -1+.5*x+.2*x^2
+sim_y <- function(x, sd) {
+  n=length(x)
+  f(x) + rnorm(n, sd = sd)
+}
+```
+:::
+
+
+## b. Generate training data
+
+Simulate $n=100$ realizations from these distributions using $\sigma=3$. Produce a scatterplot and draw the true regression line $f(x) = E[Y \mid X=x]$.
+
+- Use `set.seed(611)` prior to generating the data.
+
+
+::: {.callout-note title="Solution"}
+```{r}
+set.seed(611)
+X = sim_x(100)
+Y = sim_y(X, 3)
+data_train = tibble(X, Y)
+library(ggplot2)
+
+data_train %>%
+  ggplot(aes(X, Y)) + geom_point() + geom_function(fun=f)
+```
+:::
+
+
+## c. Fit three models
+
+Fit three polynomial regression models using least squares: linear, quadratic, and cubic. Produce another scatterplot, add the fitted lines and true population line $f(x)$  using different colors, and add a legend that maps the line color to a model.
+
+- Note: The true model is quadratic, but we are also fitting linear (less complex) and cubic (more complex) models.
+
+::: {.callout-note title="Solution"}
+```{r}
+lin_mod <- lm(Y~X)
+quad_mod <- lm(Y~poly(X, degree = 2))
+cube_mod <- lm(Y~poly(X, degree = 3))
+
+true_data <- data.frame(X = seq(min(data_train$X), max(data_train$X), length.out = 100))
+true_data$Y <- f(true_data$X)
+
+data_train %>%
+  ggplot(aes(X, Y)) + geom_point() + 
+  geom_line(data = true_data, aes(X, Y, color = "True"), linewidth = 1) + 
+  stat_smooth(method = "lm", formula = y ~ poly(x, 1), se = FALSE, aes(color = "Linear")) +
+  stat_smooth(method = "lm", formula = y ~ poly(x, 2), se = FALSE, aes(color = "Quadratic")) +
+  stat_smooth(method = "lm", formula = y ~ poly(x, 3), se = FALSE, aes(color = "Cubic")) +
+  labs(title = "Varying Polynomial Degree", x = "X", y = "Y") +
+  scale_color_manual(
+    name = 'Regression Type',
+    breaks = c('Linear', "Quadratic", "Cubic", "True"),
+    values = c("Linear" = "green", "Quadratic" = "orange", "Cubic" = "red", "True" ="blue")
+    ) 
+```
+:::
+
+
+## d. Predictive performance
+
+Generate a *test data* set of 10,000 observations from the same distributions. Use `set.seed(612)` prior to generating the test data.
+
+- Calculate the estimated mean squared error (MSE) for each model.
+- Are the results as expected?
+
+::: {.callout-note title="Solution"}
+```{r}
+set.seed(612)
+ntest = 10000 # Number of test samples
+xtest = sim_x(ntest) # generate test X's
+ytest = sim_y(xtest, sd = 3) # generate test Y's
+data_test = tibble(X=xtest, Y=ytest) # test data
+
+poly_eval <- function(deg, data_train, data_test){
+  if(deg==0) m = lm (Y~1, data = data_train)
+  else m = lm(Y~poly(X, degree = deg), data = data_train)
+  p = length(coef(m))
+  mse_train = mean(m$residuals^2)
+  yhat = predict(m, data_test)
+  mse_test = mean((data_test$Y-yhat)^2)
+  tibble(degree=deg, edf = p, mse_train, mse_test)
+}
+poly_eval(1, data_train, data_test)
+poly_eval(2, data_train, data_test)
+poly_eval(3, data_train, data_test)
+```
+The test MSE values are similar to the training values for each model. They are also smaller due to the larger dataset being used compared to the 100 training points.
+:::
+
+
+## e. Optimal performance
+
+What is the best achievable MSE? That is, what is the MSE if the true $f(x)$ was used to evaluate the test set? How close does the best method come to achieving the optimum?
+
+::: {.callout-note title="Solution"}
+```{r}
+yhat = f(data_test$X)
+mse_test = mean((data_test$Y-yhat)^2)
+print(mse_test)
+```
+The optimum MSE, 8.97 is less than the lowest MSE from the linear model above, 9.29, but twice as far from the Cubic model's MSE, 9.65.
+:::
+
+
+## f. Replication
+
+The MSE scores obtained in part *d* came from one realization of training data. Here will we explore how much variation there is in the MSE scores by replicating the simulation many times.
+
+- Re-run parts b. and c. (i.e., generate training data and fit models) 100 times.
+    - Do not generate new testing data
+    - Use `set.seed(613)` prior to running the simulation and do not set the seed in any other places.
+- Calculate the test MSE for all simulations.
+    - Use the same test data from part d. (This question is only about the variability that comes from the *training data*).
+- Create kernel density or histogram plots of the resulting MSE values for each model.
+
+::: {.callout-note title="Solution"}
+```{r}
+set.seed(613)
+n_sim <- 100
+mse_lin <- numeric(n_sim)
+mse_quad <- numeric(n_sim)
+mse_cube <- numeric(n_sim)
+for(i in 1:n_sim) {
+  X = sim_x(100)
+  Y = sim_y(X, 3)
+  data_train = tibble(X, Y)
+  lin_mod <- lm(Y ~ X, data = data_train)
+  quad_mod <- lm(Y ~ poly(X, degree = 2), data = data_train)
+  cube_mod <- lm(Y ~ poly(X, degree = 3), data = data_train)
+  
+  # Predict on test data
+  pred_lin <- predict(lin_mod, newdata = data_test)
+  pred_quad <- predict(quad_mod, newdata = data_test)
+  pred_cube <- predict(cube_mod, newdata = data_test)
+  
+  # Calculate MSE
+  mse_lin[i] <- mean((data_test$Y - pred_lin)^2)
+  mse_quad[i] <- mean((data_test$Y - pred_quad)^2)
+  mse_cube[i] <- mean((data_test$Y - pred_cube)^2)
+}
+mse_data <- data.frame(
+  MSE = c(mse_lin, mse_quad, mse_cube),
+  Model = rep(c("Linear", "Quadratic", "Cubic"), each = n_sim)
+)
+
+# Plot the MSE values
+
+ggplot(mse_data, aes(x = MSE, fill = Model)) +
+  geom_density(alpha = 0.5) +
+  labs(title = "Density Plot of MSE for Different Models",
+       x = "MSE",
+       y = "Density") +
+  theme_minimal()
+```
+:::
+
+
+## g. Best model
+
+Show a count of how many times each model was the best. That is, out of the 100 simulations, count how many times each model had the lowest MSE.
+
+::: {.callout-note title="Solution"}
+```{r}
+best_mod <- character(n_sim)
+for (i in 1:n_sim) {
+  mse_values <- c(Linear = mse_lin[i], Quadratic = mse_quad[i], Cubic = mse_cube[i])
+  best_mod[i] <- names(which.min(mse_values))
+}
+
+best_count <- table(best_mod)
+print(best_count)
+```
+:::
+
+
+## h. Function to implement simulation
+
+Write a function that implements the simulation in part *f*. The function should have arguments for i) the size of the training data $n$, ii) the standard deviation of the random error $\sigma$, and iii) the test data.  Use the same `set.seed(613)`. 
+
+::: {.callout-note title="Solution"}
+```{r}
+rep_sim <- function(n, sd, data_test, seed = 613) {
+  set.seed(seed)
+  mse_lin <- numeric(n_sim)
+  mse_quad <- numeric(n_sim)
+  mse_cube <- numeric(n_sim)
+  for(i in 1:n_sim) {
+    X = sim_x(n)
+    Y = sim_y(X, sd)
+    data_train = tibble(X, Y)
+    lin_mod <- lm(Y ~ X, data = data_train)
+    quad_mod <- lm(Y ~ poly(X, degree = 2), data = data_train)
+    cube_mod <- lm(Y ~ poly(X, degree = 3), data = data_train)
+    
+    # Predict on test data
+    pred_lin <- predict(lin_mod, newdata = data_test)
+    pred_quad <- predict(quad_mod, newdata = data_test)
+    pred_cube <- predict(cube_mod, newdata = data_test)
+    
+    # Calculate MSE
+    mse_lin[i] <- mean((data_test$Y - pred_lin)^2)
+    mse_quad[i] <- mean((data_test$Y - pred_quad)^2)
+    mse_cube[i] <- mean((data_test$Y - pred_cube)^2)
+  }
+  mse_data <- data.frame(
+    MSE = c(mse_lin, mse_quad, mse_cube),
+    Model = rep(c("Linear", "Quadratic", "Cubic"), each = n_sim)
+  )
+  best_mod <- character(n_sim)
+  for (i in 1:n_sim) {
+    mse_values <- c(Linear = mse_lin[i], Quadratic = mse_quad[i], Cubic = mse_cube[i])
+    best_mod[i] <- names(which.min(mse_values))
+  }
+  
+  best_count <- table(best_mod)
+  print(best_count)
+}
+
+```
+:::
+
+
+## i. Performance when $\sigma=2$ 
+
+Use your function to repeat the simulation in part *f*, but use $\sigma=2$. Report the number of times each model was best (you do not need to produce any plots). 
+
+- Be sure to generate new test data with ($n = 10000$, $\sigma = 2$, using `seed = 612`). 
+
+::: {.callout-note title="Solution"}
+```{r}
+set.seed(612)
+ntest = 10000 # Number of test samples
+xtest = sim_x(ntest) # generate test X's
+ytest = sim_y(xtest, sd = 2) # generate test Y's
+data_test = tibble(X=xtest, Y=ytest) # test data
+rep_sim(100, 2, data_test)
+```
+:::
+
+
+## j. Performance when $\sigma=4$ and $n=300$
+
+Repeat *i*, but now use $\sigma=4$ and $n=300$.
+
+- Be sure to generate new test data with ($n = 10000$, $\sigma = 4$, using `seed = 612`). 
+
+::: {.callout-note title="Solution"}
+```{r}
+set.seed(612)
+ntest = 10000 # Number of test samples
+xtest = sim_x(ntest) # generate test X's
+ytest = sim_y(xtest, sd = 4) # generate test Y's
+data_test = tibble(X=xtest, Y=ytest) # test data
+rep_sim(300, 4, data_test)
+```
+:::
+
+
+## k. Understanding
+
+Describe the effects $\sigma$ and $n$ has on selection of the best model? Why is the *true* model form (i.e., quadratic) not always the *best* model to use when prediction is the goal?
+
+::: {.callout-note title="Solution"}
+The smaller the value of $n$ and the larger the value of $\sigma$ the more variance in the MSE of each individual model - meaning that quadratic does not always have the lowest MSE despite having a mode/high density around ~9.1 due to the uncertainty associated with creating the training data. When predicting values that have more variance, sometimes the true model form doesn't well approximate the existing data because the bias imputed by the model causes it to be inaccurate.
+:::
+
+
+
+
+
+
+

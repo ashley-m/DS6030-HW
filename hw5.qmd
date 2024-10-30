@@ -1,0 +1,460 @@
+---
+title: "Homework #5: Probability and Classification" 
+author: "**Ashley Miller**"
+format: ds6030hw-html
+---
+
+```{r config, include=FALSE}
+# Set global configurations and settings here
+knitr::opts_chunk$set()                 # set global chunk options
+ggplot2::theme_set(ggplot2::theme_bw()) # set ggplot2 theme
+```
+
+
+# Required R packages and Directories {.unnumbered .unlisted}
+
+```{r packages, message=FALSE, warning=FALSE}
+dir_data= 'https://mdporter.github.io/teaching/data/' # data directory
+library(glmnet)
+library(tidyverse) # functions for data manipulation
+library(skimr)
+library(ranger)
+library(pROC)
+```
+
+
+# Crime Linkage
+
+Crime linkage attempts to determine if a set of unsolved crimes share a common offender. *Pairwise* crime linkage is the more simple task of deciding if two crimes share a common offender; it can be considered a binary classification problem. The linkage training data has 8 evidence variables that measure the similarity between a pair of crimes:
+
+- `spatial` is the spatial distance between the crimes
+- `temporal` is the fractional time (in days) between the crimes
+- `tod` and `dow` are the differences in time of day and day of week between the crimes
+- `LOC`, `POA,` and `MOA` are binary with a 1 corresponding to a match (type of property, point of entry, method of entry)
+- `TIMERANGE` is the time between the earliest and latest possible times the crime could have occurred (because the victim was away from the house during the crime).
+- The response variable indicates if the crimes are linked ($y=1$) or unlinked ($y=0$).
+
+
+These problems use the [linkage-train](`r file.path(dir_data, "linkage_train.csv") `) and [linkage-test](`r file.path(dir_data, "linkage_test.csv") `) datasets (click on links for data). 
+
+
+## Load Crime Linkage Data
+
+::: {.callout-note title="Solution"}
+```{r}
+data_train = read.csv("linkage_train.csv")
+data_test = read.csv("linkage_test.csv")
+
+#data_train = mutate(data_train, temporal = temporal/sd(temporal))
+#data_test = mutate(data_test, temporal = temporal/sd(temporal))
+
+skim(data_train)
+skim(data_test)
+```
+:::
+
+# Problem 1: Penalized Regression for Crime Linkage
+
+## a. Fit a penalized *linear regression* model to predict linkage. 
+
+Use an elastic net penalty (including lasso and ridge) (your choice). 
+
+- Report the value of $\alpha \in [0, 1]$ used. 
+- Report the value of $\lambda$ used.
+- Report the estimated coefficients.
+
+::: {.callout-note title="Solution"}
+```{r}
+set.seed(666)
+folds = rep(1:10, length=nrow(data_train)) %>% sample()
+
+X_tr = as.matrix(data_train[-9])
+Y_tr = as.matrix(data_train$y)
+
+el_fit = cv.glmnet(X_tr,
+                   Y_tr,
+                   alpha = 0.5,
+                   foldid = folds)
+
+el_trn_yhat = as.numeric(predict(el_fit, X_tr))
+
+el_coef <- coef(el_fit)
+
+print(el_fit$cvm[which(el_fit$lambda == el_fit$lambda.1se)])
+
+print("alpha = 0.5")
+print(el_fit$lambda.1se)
+print(el_coef)
+```
+:::
+
+
+## b. Fit a penalized *logistic regression* model to predict linkage. 
+
+Use an elastic net penalty (including lasso and ridge) (your choice). 
+
+- Report the value of $\alpha \in [0, 1]$ used. 
+- Report the value of $\lambda$ used.
+- Report the estimated coefficients.
+
+::: {.callout-note title="Solution"}
+```{r}
+set.seed(666)
+el_logit_fit = cv.glmnet(X_tr,
+                   Y_tr,
+                   family = "binomial",
+                   alpha = 0.5,
+                   foldid = folds)
+
+el_logit_coef <- coef(el_logit_fit)
+
+el_logit_trn_yhat = as.numeric(predict(el_logit_fit, X_tr))
+
+print(el_logit_fit$cvm[which(el_logit_fit$lambda == el_logit_fit$lambda.1se)])
+
+print("alpha = 0.5")
+print(el_logit_fit$lambda.1se)
+print(el_logit_coef)
+```
+:::
+
+# Problem 2: Random Forest for Crime Linkage
+
+Fit a random forest model to predict crime linkage. 
+
+- Report the loss function (or splitting rule) used. 
+- Report any non-default tuning parameters.
+- Report the variable importance (indicate which importance method was used). 
+
+::: {.callout-note title="Solution"}
+```{r}
+data_train_factor = data_train %>%
+  mutate(y = as.factor(y))
+rf_mod = ranger(
+        formula = y~.,
+        data = data_train_factor,
+        splitrule = "extratrees",
+        importance = "permutation",
+        probability = T,
+        seed = 666
+        )
+rf_mod_yhat = as.numeric(predict(rf_mod, data_train_factor)$predictions[,1])
+
+print("Split rule used: extratrees to reduce overfit")
+print("Importance method: permutation")
+print(importance(rf_mod))
+```
+:::
+
+# Problem 3: ROC Curves
+
+## a. ROC curve: training data
+
+Produce one plot that has the ROC curves, using the *training data*, for all three models (linear, logistic, and random forest). Use color and/or linetype to distinguish between models and include a legend.    
+Also report the AUC (area under the ROC curve) for each model. Again, use the *training data*. 
+
+- Note: you should be wary of being asked to evaluation predictive performance from the same data used to estimate the tuning and model parameters. The next problem will walk you through a more proper way of evaluating predictive performance with resampling. 
+
+::: {.callout-note title="Solution"}
+```{r, echo=FALSE}
+roc_el = roc(data_train$y, el_trn_yhat)
+roc_el_logit = roc(data_train$y, el_logit_trn_yhat)
+roc_rf = roc(data_train_factor$y, rf_mod_yhat)
+
+auc_el_logit_trn = auc(roc_el_logit)
+auc_rf_trn = auc(roc_rf)[[1]]
+
+el_roc = data.frame(
+  tpr = roc_el$sensitivities,
+  fpr = 1-roc_el$specificities,
+  model = "Elastic Net"
+)
+
+el_logit_roc = data.frame(
+  tpr = roc_el_logit$sensitivities,
+  fpr = 1-roc_el_logit$specificities,
+  model = "Logistic Regression"
+)
+
+rf_mod_roc = data.frame(
+  tpr = roc_rf$sensitivities,
+  fpr = 1-roc_rf$specificities,
+  model = "Random Forest"
+)
+
+roc_comb = rbind(el_roc, el_logit_roc, rf_mod_roc)
+
+roc_comb %>%
+  ggplot(aes(x = fpr, y = tpr, color = model)) +
+  geom_line(linewidth=1) +
+  geom_abline(linetype = "dashed", color = "grey")
+  labs(
+    title = "ROC Curve Comparison",
+    x = "False Positive Rate",
+    y = "True Positive Rate"
+  ) 
+```
+:::
+
+
+## b. ROC curve: resampling estimate
+
+Recreate the ROC curve from the penalized logistic regression (logreg) and random forest (rf) models using repeated hold-out data. The following steps will guide you:
+
+- For logreg, use $\alpha=.75$. For rf use *mtry = 2*,  *num.trees = 1000*, and fix any other tuning parameters at your choice. 
+- Run the following steps 25 times:
+    i. Hold out 500 observations.
+    ii. Use the remaining observations to estimate $\lambda$ using 10-fold CV for the logreg model. Don't tune any rf parameters.
+    iii. Predict the probability of linkage for the 500 hold-out observations.
+    iv. Store the predictions and hold-out labels.
+    v. Calculate the AUC. 
+- Report the mean AUC and standard error for both models. Compare to the results from part a. 
+- Produce two plots showing the 25 ROC curves for each model. 
+- Note: by estimating $\lambda$ each iteration, we are incorporating the uncertainty present in estimating that tuning parameter. 
+    
+::: {.callout-note title="Solution"} 
+```{r, echo=FALSE}
+set.seed(666)
+
+roc_list = list()
+
+for(i in 1:25){
+  hold_i = sample(1:nrow(data_train), 500)
+  hold_d = data_train[hold_i,]
+  hold_d_x = as.matrix(hold_d[-9])
+  hold_d_y = hold_d$y
+  
+  trn_d = data_train[-hold_i,]
+  trn_d_x = as.matrix(trn_d[-9])
+  trn_d_y = trn_d$y
+  trn_d_y_factor = as.factor(trn_d_y)
+  
+  el_logit_hold = cv.glmnet(trn_d_x,
+                            trn_d_y,
+                            family = "binomial",
+                            alpha = 0.75,
+                            nfolds = 10,
+                            )
+  
+  #for_trn = data.frame(trn_d_y_factor, trn_d_x)
+  rf_mod_hold = ranger(formula = y~.,
+                       data = as.data.frame(trn_d),
+                       mtry = 2,
+                       num.trees = 1000,
+                       importance = "permutation",
+                       probability = T,
+                       seed = 666
+                      )
+  
+  logit_hold_probs = as.matrix(predict(el_logit_hold, hold_d_x, type = "response"))
+  rf_hold_probs = predict(rf_mod_hold, hold_d_x)$predictions[,1]
+  
+  actuals <- hold_d$y
+
+  # Calculate ROC and AUROC
+  roc_el_logit <- roc(actuals, as.numeric(logit_hold_probs), 
+                      levels = c("0","1"),
+                      direction = "<")
+  auc_el_logit <- auc(roc_el_logit)
+  
+  coef(rf_mod_hold)
+  
+  # Calculate ROC and AUROC
+  roc_rf_mod <- roc(actuals, as.numeric(rf_hold_probs), 
+                    levels = c("0","1"),
+                    direction = "<")
+  auc_rf_mod <- auc(roc_rf_mod)
+  
+  roc_list[[i]] <- list(
+    el_logit = data.frame(
+      tpr = roc_el_logit$sensitivities,
+      fpr = 1 - roc_el_logit$specificities,
+      model = "Elastic Net",
+      iteration = i,
+      auc = rep(auc_el_logit, length(roc_el_logit$sensitivities))
+    ),
+    rf_mod = data.frame(
+      tpr = roc_rf_mod$sensitivities,
+      fpr = 1 - roc_rf_mod$specificities,
+      model = "Random Forest",
+      iteration = i,
+      auc = rep(auc_rf_mod, length(roc_rf_mod$sensitivities))
+    )
+    
+  )
+}
+
+roc_data <- do.call(rbind, lapply(roc_list, function(x) rbind(x$el_logit, x$rf_mod)))
+
+
+ggplot(roc_data, aes(x = fpr, y = tpr, color = as.factor(iteration), group = iteration)) +
+  geom_line(linewidth = 1) +
+  geom_abline(linetype = "dashed", color = "grey") +
+  labs(
+    title = "ROC Curves for Different Models Across 25 Iterations",
+    x = "False Positive Rate",
+    y = "True Positive Rate"
+  )  +
+  facet_wrap(~ model, scales = "free") +
+  scale_color_discrete(name = "Iteration")
+
+
+```
+```{r}
+auc_el_list <- sapply(roc_list, function(x) x$el_logit$auc[1])
+auc_rf_list <- sapply(roc_list, function(x) x$rf_mod$auc[1])
+
+calculate_mean_se <- function(AUC) {
+  mean_auc <- mean(AUC)
+  se_auc <- sd(AUC) / sqrt(length(AUC))
+  return(list(mean = mean_auc, se = se_auc))
+}
+
+mean_se_elastic_net <- calculate_mean_se(auc_el_list)
+
+mean_se_random_forest <- calculate_mean_se(auc_rf_list)
+
+# Print the results
+cat("Elastic Net - Mean AUC:", mean_se_elastic_net$mean, "Standard Error:", mean_se_elastic_net$se, "\n")
+cat("Elastic Net - Training AUC:", auc_el_logit_trn, "\n")
+cat("Random Forest - Mean AUC:", mean_se_random_forest$mean, "Standard Error:", mean_se_random_forest$se, "\n")
+cat("Random Forest - Training AUC:", auc_rf_trn, "\n")
+```
+We would expect that the AUC to be lower for the nested CV/holdout set because it is attempting to capture the uncertainty of the variation, generalizing the model better.
+:::
+
+# Problem 4: Contest
+
+## a. Contest Part 1: Predict the estimated *probability* of linkage. 
+
+Predict the estimated *probability* of linkage for the test data (using any model). 
+
+- Submit a .csv file (ensure comma separated format) named `lastname_firstname_1.csv` that includes the column named **p** that is your estimated posterior probability. We will use automated evaluation, so the format must be exact. 
+- You are free to use any model (even ones we haven't yet covered in the course).
+- You are free to use any data transformation or feature engineering.
+- You will receive credit for a proper submission; the top five scores will receive 2 bonus points.     
+- Your probabilities will be evaluated with respect to the mean negative Bernoulli log-likelihood (known as the average *log-loss* metric):
+$$ 
+L = - \frac{1}{M} \sum_{i=1}^m [y_i \log \, \hat{p}_i + (1 - y_i) \log \, (1 - \hat{p}_i)]
+$$
+where $M$ is the number of test observations, $\hat{p}_i$ is the prediction for the $i$th test observation, and $y_i \in \{0,1\}$ are the true test set labels. 
+
+::: {.callout-note title="Solution"}
+```{r}
+
+log_loss = function(actual, predicted) {
+  ep <- 1e-15
+  predicted = pmax(pmin(predicted, 1 - ep), ep)
+  -mean(actual * log(predicted) + (1 - actual) * log(1 - predicted))
+}
+
+for(i in 1:3){
+rf_con = ranger(y~.,
+                data = data_train,
+                mtry = 1,
+                splitrule = "extratrees",
+                min.bucket = i,
+                num.trees = 1000,
+                importance = "permutation",
+                probability = T,
+                seed = 666
+                )
+
+
+rf_con_probs_val = predict(rf_con, data_train)$predictions[,1]
+
+
+print(log_loss(data_train$y, rf_con_probs_val))
+}
+
+rf_con = ranger(y~.,
+                data = data_train,
+                mtry = 1,
+                splitrule = "extratrees",
+                min.bucket = 14,
+                num.trees = 1000,
+                importance = "permutation",
+                probability = T,
+                seed = 666
+                )
+rf_con_probs = data.frame(predict(rf_con, data_test)$predictions[,1])
+colnames(rf_con_probs) <- "p"
+write.csv(rf_con_probs, "miller_ashley_1.csv",
+          row.names = F)
+```
+:::
+
+
+## b. Contest Part 2: Predict the *linkage label*. 
+
+Predict the linkages for the test data (using any model). 
+
+- Submit a .csv file (ensure comma separated format) named `lastname_firstname_2.csv` that includes the column named **linkage** that takes the value of 1 for linked pairs and 0 for unlinked pairs. We will use automated evaluation, so the format must be exact. 
+- You are free to any model (even ones we haven't yet covered in the course).
+- You are free to use any data transformation or feature engineering.
+- Your labels will be evaluated based on total cost, where cost is equal to `1*FP + 8*FN`. This implies that False Negatives (FN) are 8 times as costly as False Positives (FP).    
+- You will receive credit for a proper submission; the top five scores will receive 2 bonus points. Note: you only will get bonus credit for one of the two contests. 
+
+::: {.callout-note title="Solution"}
+```{r}
+cost = function(actual, predicted, t){
+  predicted = ifelse(predicted>t, 1,0)
+  actual = as.factor(actual)
+  predicted = as.factor(predicted)
+  
+  FP = sum(actual == 0 & predicted == 1)
+  FN = sum(actual == 1 & predicted == 0)
+  TP = sum(actual == 1 & predicted == 1)
+  TN = sum(actual == 0 & predicted == 0)
+  
+  return(FP+(8*FN))
+}
+
+
+rf_con_lab = ranger(y~.,
+                data = data_train[-c(1,2)],
+                mtry = 1,
+                num.trees = 1000,
+                importance = "permutation",
+                probability = T,
+                seed = 666
+                )
+
+
+rf_con_lab_val = predict(rf_con_lab, data_train)$predictions[,1]
+
+#rf_con_lab_val = ifelse(rf_con_lab_val > i, 1, 0)
+
+
+thresh = seq(0.01,.99, by = .01)
+costs = sapply(thresh, function(t){
+  cost(data_train$y, rf_con_lab_val, t)
+})
+
+min_cost = min(costs)
+
+opt_t = thresh[costs == min_cost]
+
+final_t = opt_t[which.min(abs(opt_t-0.5))]
+
+rf_con = ranger(y~.,
+                data = data_train[-c(1,2)],
+                mtry = 1,
+                splitrule = "extratrees",
+                num.trees = 1000,
+                importance = "permutation",
+                probability = T,
+                seed = 666
+                )
+
+rf_con_lab_hat = data.frame(predict(rf_con, data_test)$predictions[,1])
+rf_con_lab_hat = ifelse(rf_con_lab_hat > final_t, 1, 0)
+colnames(rf_con_lab_hat) <- "linkage"
+write.csv(rf_con_lab_hat, "miller_ashley_2.csv",
+          row.names = F)
+
+#print(importance(rf_con))
+table(rf_con_lab_hat)
+```
+:::
+

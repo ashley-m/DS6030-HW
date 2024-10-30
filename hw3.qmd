@@ -1,0 +1,317 @@
+---
+title: "Homework #3: Penalized Regression" 
+author: "**Ashley Miller**"
+format: ds6030hw-html
+---
+
+# Required R packages and Directories {.unnumbered .unlisted}
+
+```{r packages, message=FALSE, warning=FALSE}
+data_dir = 'https://mdporter.github.io/teaching/data/' # data directory
+library(mlbench)
+library(glmnet)
+library(tidymodels)# for optional tidymodels solutions
+library(tidyverse) # functions for data manipulation  
+```
+
+# Problem 1: Optimal Tuning Parameters
+
+In cross-validation, we discussed choosing the tuning parameter values that minimized the cross-validation error. Another approach, called the "one-standard error" rule [ISL pg 214, ESL pg 61], uses the values corresponding to the least complex model whose cv error is within one standard error of the best model. The goal of this assignment is to compare these two rules.
+
+Use simulated data from `mlbench.friedman1(n, sd=2)` in the `mlbench` R package to fit *lasso models*. The tuning parameter $\lambda$ (corresponding to the penalty on the coefficient magnitude) is the one we will focus one. Generate training data, use k-fold cross-validation to get $\lambda_{\rm min}$ and $\lambda_{\rm 1SE}$, generate test data, make predictions for the test data, and compare performance of the two rules under a squared error loss using a hypothesis test.
+
+
+Choose reasonable values for:
+
+- Number of cv folds ($K$)
+    - Note: you are free to use repeated CV, repeated hold-outs, or bootstrapping instead of plain cross-validation; just be sure to describe what do did so it will be easier to follow.
+- Number of training and test observations
+- Number of simulations
+- If everyone uses different values, we will be able to see how the results change over the different settings.
+- Don't forget to make your results reproducible (e.g., set seed)
+
+This pseudo code (using k-fold cv) will get you started:
+```yaml
+library(mlbench)
+library(glmnet)
+
+#-- Settings
+n_train =        # number of training obs
+n_test =         # number of test obs
+K =              # number of CV folds
+alpha =          # glmnet tuning alpha (1 = lasso, 0 = ridge)
+M =              # number of simulations
+
+#-- Data Generating Function
+getData <- function(n) mlbench.friedman1(n, sd=2) # data generating function
+
+#-- Simulations
+# Set Seed Here
+
+for(m in 1:M) {
+
+# 1. Generate Training Data
+# 2. Build Training Models using cross-validation, e.g., cv.glmnet()
+# 3. get lambda that minimizes cv error and 1 SE rule
+# 4. Generate Test Data
+# 5. Predict y values for test data (for each model: min, 1SE)
+# 6. Evaluate predictions
+
+}
+
+#-- Compare
+# compare performance of the approaches / Statistical Test
+```
+
+## a. Code for the simulation and performance results
+
+::: {.callout-note title="Solution"}
+```{r}
+n_train = 5000       # number of training obs
+n_test =  1000       # number of test obs
+K = 10             # number of CV folds
+alpha = 1         # glmnet tuning alpha (1 = lasso, 0 = ridge)
+M = 100             # number of simulations
+
+#-- Data Generating Function
+getData <- function(n) mlbench.friedman1(n, sd=2) # data generating function
+
+#-- Simulations
+# Set Seed Here
+set.seed(666)
+
+MSE_tst <- tibble(min = numeric(M), se = numeric(M))
+
+folds = rep(1:10, length=n_train) %>% sample()
+for(m in 1:M) {
+
+# 1. Generate Training Data
+train = getData(n_train)
+X_tr = train$x
+
+# 2. Build Training Models using cross-validation, e.g., cv.glmnet()
+
+las_mod = cv.glmnet(train$x, train$y,
+                    alpha = alpha,
+                    foldid = folds,
+                    nfolds = K)
+
+# 3. get lambda that minimizes cv error and 1 SE rule
+l_min <- las_mod$lambda.min
+l_1 <- las_mod$lambda.1se
+
+# 4. Generate Test Data
+test = getData(n_test)
+X_t <-test$x
+
+# 5. Predict y values for test data (for each model: min, 1SE)
+yhat_min = predict(las_mod, X_t, s = l_min)
+yhat_1se = predict(las_mod, X_t, s = l_1)
+
+# 6. Evaluate predictions
+mse_min = mean( (test$y- yhat_min)^2 ) # test MSE
+mse_1se = mean( (test$y- yhat_1se)^2 ) # test MSE
+MSE_tst$min[m] = mse_min
+MSE_tst$se[m] = mse_1se
+
+}
+
+
+#-- Compare
+# compare performance of the approaches / Statistical Test
+print(mean(MSE_tst$min))
+print(mean(MSE_tst$se))
+
+result = t.test(MSE_tst$min, MSE_tst$se, paired=T) # test to compare two means 
+```
+:::
+
+## b. Hypothesis test
+
+Provide results and discussion of a hypothesis test comparing $\lambda_{\rm min}$ and $\lambda_{\rm 1SE}$.
+
+::: {.callout-note title="Solution"}
+```{r}
+print(result)
+```
+The t-test to compare two means after running 10000 simulations yielded a p value that was well below the standard alpha level of 0.05. This means that we would reject the null hypothesis that the difference in means is zero.
+:::
+
+# Problem 2 Prediction Contest: Real Estate Pricing
+
+This problem uses the [realestate-train](`r file.path(data_dir, 'realestate-train.csv')`) and [realestate-test](`r file.path(data_dir, 'realestate-test.csv')`) (click on links for data).
+
+The goal of this contest is to predict sale price (in thousands) (`price` column) using an *elastic net* model. Evaluation of the test data will be based on the root mean squared error ${\rm RMSE}= \sqrt{\frac{1}{m}\sum_i (y_i - \hat{y}_i)^2}$ for the $m$ test set observations.
+
+
+## a. Load and pre-process data
+
+Load the data and create necessary data structures for running *elastic net*.
+
+- You are free to use any data transformation or feature engineering
+- Note: there are some categorical predictors so at the least you will have to convert those to something numeric (e.g., one-hot or dummy coding).
+
+::: {.callout-note title="Solution"}
+```{r}
+re_trn = read.csv("realestate-train.csv")
+re_tst = read.csv("realestate-test.csv")
+```
+```{r}
+p_mean = mean(re_trn$price)
+p_sd = sd(re_trn$price)
+
+price_trans <- function(z) z*p_sd+p_mean
+
+re_trn <- re_trn %>%
+  mutate(price = (price-mean(price))/sd(price),
+         PoolArea = (PoolArea-mean(PoolArea))/sd(PoolArea),
+         GarageCars = (GarageCars-mean(GarageCars))/sd(GarageCars),
+         Fireplaces= (Fireplaces-mean(Fireplaces))/sd(Fireplaces),
+         TotRmsAbvGrd = (TotRmsAbvGrd-mean(TotRmsAbvGrd))/sd(TotRmsAbvGrd),
+         Baths = (Baths-mean(Baths))/sd(Baths),
+         SqFeet = (SqFeet-mean(SqFeet))/sd(SqFeet),
+         CentralAir = recode(CentralAir,
+                             Y = 1,
+                             N = 0),
+         Age = (Age-mean(Age))/sd(Age),
+         LotSize = (LotSize-mean(LotSize))/sd(LotSize),
+         BldgType = recode(BldgType,  # weights determined by EDA and research
+                           "1Fam" = 1,
+                           "2fmCon" = 0.8,
+                           Duplex = 0.82,
+                           TwnhsE = 0.78,
+                           Twnhs = 0.7),
+         HouseStyle = recode(HouseStyle,
+                             "1.5Fin" = 1.2,
+                             "1.5Unf" = 1.15,
+                             "1Story" = 1,
+                             "2.5Fin" = 1.35,
+                             "2.5Unf" = 1.3,
+                             "2Story" = 1.25,
+                             "SFoyer" = 0.9,
+                             "SLvl" = 0.9),
+         condition = (condition-mean(condition))/sd(condition)
+         )
+
+re_tst <- re_tst %>%
+  mutate(PoolArea = (PoolArea-mean(PoolArea))/sd(PoolArea),
+         GarageCars = (GarageCars-mean(GarageCars))/sd(GarageCars),
+         Fireplaces= (Fireplaces-mean(Fireplaces))/sd(Fireplaces),
+         TotRmsAbvGrd = (TotRmsAbvGrd-mean(TotRmsAbvGrd))/sd(TotRmsAbvGrd),
+         Baths = (Baths-mean(Baths))/sd(Baths),
+         SqFeet = (SqFeet-mean(SqFeet))/sd(SqFeet),
+         CentralAir = recode(CentralAir,
+                             Y = 1,
+                             N = 0),
+         Age = (Age-mean(Age))/sd(Age),
+         LotSize = (LotSize-mean(LotSize))/sd(LotSize),
+         BldgType = recode(BldgType,
+                           "1Fam" = 1,
+                           "2fmCon" = 0.8,
+                           Duplex = 0.82,
+                           TwnhsE = 0.78,
+                           Twnhs = 0.7),
+         HouseStyle = recode(HouseStyle,
+                             "1.5Fin" = 1.2,
+                             "1.5Unf" = 1.15,
+                             "1Story" = 1,
+                             "2.5Fin" = 1.35,
+                             "2.5Unf" = 1.3,
+                             "2Story" = 1.25,
+                             "SFoyer" = 0.9,
+                             "SLvl" = 0.9),
+         condition = (condition-mean(condition))/sd(condition)
+         )
+```
+
+:::
+
+## b. Fit elastic net model
+
+Use an *elastic net* model to predict the `price` of the test data.
+
+- You are free to use any data transformation or feature engineering
+- You are free to use any tuning parameters
+- Report the $\alpha$ and $\lambda$ parameters you used to make your final predictions.
+- Describe how you choose those tuning parameters
+
+::: {.callout-note title="Solution"}
+```{r}
+MSE_trn <- tibble(min = numeric(100), se = numeric(100))
+i=1
+folds = rep(1:10, length=nrow(re_trn)) %>% sample()
+for(alpha in seq(0.01, 1, by = 0.01)) { #iterate through 100 values of alpha
+# 1. Set Up Training Data
+X_tr = as.matrix(re_trn[-1])
+Y_tr = as.matrix(re_trn$price)
+
+# 2. Build Training Models using cross-validation, e.g., cv.glmnet()
+
+el_mod = cv.glmnet(X_tr, Y_tr,
+                    alpha = alpha,
+                    foldid = folds,
+                    nfolds = K)
+# 3. get lambda that minimizes cv error and 1 SE rule
+l_min <- el_mod$lambda.min
+l_1 <- el_mod$lambda.1se
+
+# 4. Generate Test Data
+X_t = as.matrix(re_tst)
+
+# 5. Predict y values for training data (for each model: min, 1SE)
+yhat_min = predict(el_mod, X_tr, s = l_min)
+yhat_1se = predict(el_mod, X_tr, s = l_1)
+
+# 6. Evaluate predictions
+mse_min = mean( (Y_tr- yhat_min)^2 ) # train MSE
+mse_1se = mean( (Y_tr- yhat_1se)^2 ) # train MSE
+MSE_trn$min[i] = mse_min
+MSE_trn$se[i] = mse_1se
+i=i+1
+}
+el_mod = cv.glmnet(X_tr, Y_tr,
+                    alpha = which.min(MSE_trn$min)*0.01,
+                    foldid = folds,
+                    nfolds = K)
+print(min(MSE_trn$min)) #compare minimum MSE values from each alpha/lambda
+print(min(MSE_trn$se))
+print(which.min(MSE_trn$min)*0.01) # index is the alpha value
+print(el_mod$lambda.min) 
+```
+I chose the minimum value of lambda (0.00209) chosen by glmnet since it minimized the MSE of the model and because our hypothesis test from part one implied that there was a statistically significant difference in the two. The alpha level that I chose was 0.1 after iterating through 100 values of alpha between 0.01 and 1. Note: the MSE values here are calculated after normalizing price into a z-score.
+
+:::
+
+## c. Submit predictions
+
+Submit a .csv file (ensure comma separated format) named `lastname_firstname.csv` that includes your predictions in a column named *yhat*. We will use automated evaluation, so the format must be exact.
+
+- You will receive credit for a proper submission; the top five scores will receive 2 bonus points.
+
+::: {.callout-note title="Solution"}
+```{r}
+el_mod = glmnet(X_tr, Y_tr, alpha = which.min(MSE_trn$min)*0.01)
+yhat_tst = predict(el_mod, X_t, s = l_min)
+colnames(yhat_tst) <- "yhat"
+yhat_tst <- as.data.frame(yhat_tst) %>%
+  mutate(yhat = price_trans(yhat))
+write.csv(yhat_tst, file = "miller_ashley.csv",
+          row.names = F)
+y_tst = read.csv("realestate-test2.csv")
+RMSE = sqrt(mean((yhat_tst$yhat-y_tst$price)^2))
+print(RMSE)
+```
+:::
+
+## d. Report anticpated performance
+
+Report the anticipated performance of your method in terms of RMSE. We will see how close your performance assessment matches the actual value. 
+
+::: {.callout-note title="Solution"}
+```{r}
+price_trans(min(MSE_trn$min)) %>%
+  sqrt() %>%
+print() # this is the RMSE of the chosen model after converting back to price
+```
+This value, 14.21 represents the expected amount in thousands of dollars we expect the predictions to err by.
+:::

@@ -1,0 +1,346 @@
+---
+title: "Homework #7: Stacking and Boosting" 
+author: "**Ashley Miller**"
+format: ds6030hw-html
+---
+
+
+
+```{r config, include=FALSE}
+# Set global configurations and settings here
+knitr::opts_chunk$set()                 # set global chunk options
+ggplot2::theme_set(ggplot2::theme_minimal()) # set ggplot2 theme
+library(tidyverse)
+library(ranger)
+library(xgboost)
+library(glmnet)
+library(caret)
+library(caretEnsemble)
+```
+
+
+# Stacking for Kaggle
+
+You are to make at least one official entry in the [House Prices: Advanced Regression Techniques](https://www.kaggle.com/c/house-prices-advanced-regression-techniques/overview) Kaggle contest **using stacking or model averaging**; at least one component model must be a boosting model. 
+
+- You will need to register in Kaggle (its free)
+- Read the details of the contest. Understand the data and evaluation function.
+- Make at least one submission that uses **stacking or model averaging**. 
+- If you get a score on the public leaderboard of $\text{RMSE}<0.50$ (note RMSE is calculated on the log scale), you receive full credit, otherwise, you'll lose 10 points. 
+    - I'll allow [teaming](https://www.kaggle.com/c/house-prices-advanced-regression-techniques/team). Each team member can produce one component model and then use stacking or model averaging to combine predictions. 
+    - You don't need to team, but must still combine multiple models. At least one of the component models should be boosting. 
+- Each person submit the following in Canvas:
+    - Code (if teaming, your code and the shared stacking code)
+    - kaggle name (or team name) so we can ensure you had a valid submission. 
+    - your score and current ranking on the kaggle leaderboard
+- Top 5 scores get 2 bonus points
+    - Teams will split their bonus points among team members
+
+
+
+
+Note: Check out the [Kaggle notebooks](https://www.kaggle.com/docs/notebooks) which let you make submissions directly from the notebook. Its very similar to using Rivanna's OnDemand in that you can make a RMarkdown/Jupyter notebook or R/Python scrips that run on the cloud. Free CPU (4 cores, 30GB RAM) - amazing! Let your laptops cool off after all their hard work this semester.
+
+```{r}
+train = read.csv("train.csv")
+test = read.csv("test.csv")
+levels(train$Alley)
+```
+```{r}
+mode <- function(x) {
+  ux <- unique(na.omit(x))
+  ux[which.max(tabulate(match(x, ux)))]
+}
+```
+```{r}
+train$LotFrontage[is.na(train$LotFrontage)] = 0
+train$Alley[is.na(train$Alley)] = "None"
+train$MasVnrType[is.na(train$MasVnrType)] = "None"
+train$MasVnrArea[is.na(train$MasVnrArea)] = 0
+train$BsmtQual[is.na(train$BsmtQual)] = "TA"
+train$BsmtCond[is.na(train$BsmtCond)] = "TA"
+train$BsmtExposure[is.na(train$BsmtExposure)] = "No"
+train$BsmtFinType1[is.na(train$BsmtFinType1)] = "None"
+train$BsmtFinType2[is.na(train$BsmtFinType2)] = "None"
+train$Electrical[is.na(train$Electrical)] = "SBrkr"
+train$FireplaceQu[is.na(train$FireplaceQu)] = "None"
+train$GarageType[is.na(train$GarageType)] = "None"
+train$GarageYrBlt[is.na(train$GarageYrBlt)] = mode(train$GarageYrBlt)
+train$GarageFinish[is.na(train$GarageFinish)] = "None"
+train$GarageQual[is.na(train$GarageQual)] = mode(train$GarageQual)
+train$GarageCond[is.na(train$GarageCond)] = mode(train$GarageCond)
+train$PoolQC[is.na(train$PoolQC)] = "None"
+train$Fence[is.na(train$Fence)] = "None"
+train$MiscFeature[is.na(train$MiscFeature)] = "None"
+summary(is.na(train))
+```
+```{r}
+test$LotFrontage[is.na(test$LotFrontage)] = 0
+test$Alley[is.na(test$Alley)] = "None"
+test$MasVnrType[is.na(test$MasVnrType)] = "None"
+test$MasVnrArea[is.na(test$MasVnrArea)] = 0
+test$BsmtQual[is.na(test$BsmtQual)] = "TA"
+test$BsmtCond[is.na(test$BsmtCond)] = "TA"
+test$BsmtExposure[is.na(test$BsmtExposure)] = "No"
+test$BsmtFinType1[is.na(test$BsmtFinType1)] = "None"
+test$BsmtFinType2[is.na(test$BsmtFinType2)] = "None"
+test$Electrical[is.na(test$Electrical)] = "SBrkr"
+test$FireplaceQu[is.na(test$FireplaceQu)] = "None"
+test$GarageType[is.na(test$GarageType)] = "None"
+test$GarageYrBlt[is.na(test$GarageYrBlt)] = mode(test$GarageYrBlt)
+test$GarageFinish[is.na(test$GarageFinish)] = "None"
+test$GarageQual[is.na(test$GarageQual)] = mode(test$GarageQual)
+test$GarageCond[is.na(test$GarageCond)] = mode(test$GarageCond)
+test$PoolQC[is.na(test$PoolQC)] = "None"
+test$Fence[is.na(test$Fence)] = "None"
+test$MiscFeature[is.na(test$MiscFeature)] = "None"
+test$MSZoning[is.na(test$MSZoning)] = mode(test$MSZoning)
+test$Utilities[is.na(test$Utilities)] = mode(test$Utilities)
+test$Exterior1st[is.na(test$Exterior1st)] = mode(test$Exterior1st)
+test$Exterior2nd[is.na(test$Exterior2nd)] = mode(test$Exterior2nd)
+test$BsmtFinSF1[is.na(test$BsmtFinSF1)] = 0
+test$BsmtFinSF2[is.na(test$BsmtFinSF2)] = 0
+test$BsmtUnfSF[is.na(test$BsmtUnfSF)] = 0
+test$TotalBsmtSF[is.na(test$TotalBsmtSF)] = 0
+test$BsmtFullBath[is.na(test$BsmtFullBath)] = 0
+test$BsmtHalfBath[is.na(test$BsmtHalfBath)] = 0
+test$KitchenQual[is.na(test$KitchenQual)] = mode(test$KitchenQual)
+test$Functional[is.na(test$Functional)] = "Typ"
+test$GarageCars[is.na(test$GarageCars)] = mode(test$GarageCars)
+test$GarageArea[is.na(test$GarageArea)] = mean(na.omit(test$GarageArea))
+test$SaleType[is.na(test$SaleType)] = mode(test$SaleType)
+summary(is.na(test))
+```
+```{r}
+train = train %>%
+  mutate_if(is.character, as.factor)
+test = test %>%
+  mutate_if(is.character, as.factor)
+```
+```{r}
+numeric_cols = select_if(train, is.numeric)
+outlier_check = numeric_cols %>%
+  summarise(across(everything(), ~ sum(. < (quantile(., 0.25) - 1.5 * IQR(.)) |. > (quantile(., 0.75) + 1.5 * IQR(.)))))
+print(outlier_check)
+
+out_col = setdiff(names(outlier_check)[outlier_check > 0], c("LotArea", "SalePrice"))
+
+numeric_cols %>%
+  select(all_of(out_col))%>%
+  gather(key = "variable", value = "value") %>%
+  ggplot(aes(x = variable, y = value)) +
+  geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+train%>%
+  select("LotArea", "SalePrice") %>%
+  gather(key = "variable", value = "value") %>%
+  ggplot(aes(x = variable, y= value)) +
+  geom_boxplot() + 
+  facet_wrap(~variable, scales = "free_y")
+
+```
+```{r}
+# Function to check if each factor column has only one level
+check_single_level <- function(data) {
+  single_level_cols <- sapply(data, function(col) {
+    if (is.factor(col) && nlevels(col) == 1) {
+      return(TRUE)
+    } else {
+      return(FALSE)
+    }
+  })
+  
+  # Print column names with only one level
+  single_level_col_names <- names(single_level_cols[single_level_cols])
+  if (length(single_level_col_names) > 0) {
+    print("Columns with only one level:")
+    print(single_level_col_names)
+  } else {
+    print("No columns with only one level found.")
+  }
+}
+
+# Apply the function to your dataset
+check_single_level(test)
+check_single_level(train)
+levels(test$Utilities)
+```
+```{r}
+all_data <- rbind(train[,-ncol(train)], test)
+
+combined_levels <- lapply(all_data, function(x) if(is.factor(x)) levels(x) else NULL)
+
+for(col in names(combined_levels)) {
+   if(!is.null(combined_levels[[col]])) {
+     levels(train[[col]]) <- combined_levels[[col]]
+     levels(test[[col]]) <- combined_levels[[col]]
+   }
+}
+
+dummy = dummyVars(" ~ .", data = train[, -ncol(train)])
+train_d = data.frame(predict(dummy, newdata = train))
+test_d = data.frame(predict(dummy, newdata = test))
+train_d = cbind(train_d,SalePrice = train$SalePrice)
+```
+```{r}
+
+stack_control <- trainControl(
+  method = "cv",
+  number = 5,
+  savePredictions = "all",
+  classProbs = FALSE
+)
+
+xgb_grid <- expand.grid(
+  nrounds = 1000,
+  max_depth = c(3, 5, 7),
+  eta = c(0.01, 0.1, 0.3),
+  gamma = c(0, 1),
+  colsample_bytree = c(0.5, 0.8, 1),
+  min_child_weight = c(1, 3, 5),
+  subsample = c(0.6, 0.8, 1.0)
+)
+set.seed(666)
+
+train_data <- train_d[, -which(names(train_d) == "SalePrice")]
+train_label <- train_d$SalePrice
+
+dtrain <- xgb.DMatrix(data = as.matrix(train_data), label = train_label)
+
+watchlist <- list(train = dtrain)
+
+best_params <- list()
+best_rmse <- Inf
+
+for (eta in c(0.01, 0.1, 0.3)) {
+  for (max_depth in c(3, 5, 7)) {
+    params <- list(
+      objective = "reg:squarederror",
+      eval_metric = "rmse",
+      eta = eta,
+      max_depth = max_depth
+    )
+
+    model <- xgb.train(
+      params = params,
+      data = dtrain,
+      nrounds = 1000,
+      watchlist = watchlist,
+      early_stopping_rounds = 10
+    )
+
+    if (model$best_score < best_rmse) {
+      best_rmse <- model$best_score
+      best_params <- params
+      best_params$nrounds <- model$best_iteration
+    }
+  }
+}
+
+print(best_params)
+
+
+xgb_model <- xgb.train(
+  params = best_params,
+  data = dtrain,
+  nrounds = best_params$nrounds
+)
+
+enet_grid <- expand.grid(
+  alpha = seq(0, 1, 0.1),
+  lambda = seq(0.01, 0.1, 0.01)
+)
+
+enet_model <- train(
+  SalePrice ~ .,
+  data = train_d,
+  method = "glmnet",
+  trControl = stack_control,
+  tuneGrid = enet_grid
+)
+
+rf_grid <- expand.grid(
+  mtry = c(2, 4, sqrt(300), sqrt(300)*2/3, sqrt(300)/2),
+  splitrule = "variance",
+  min.node.size = c(1, 5, 10)
+)
+
+rf_model <- train(
+  SalePrice ~ .,
+  data = train_d,
+  method = "ranger",
+  trControl = stack_control,
+  tuneGrid = rf_grid
+)
+
+earth_grid <- expand.grid(
+  degree = c(1, 2, 3),  # Polynomial degree
+  nprune = c(10, 20, 30)  # Number of terms to prune
+)
+
+earth_model <- train(
+  SalePrice ~ .,
+  data = train_d,
+  method = "earth",
+  trControl = stack_control,
+  tuneGrid = earth_grid
+)
+
+trained_models <- list(
+  xgb = xgb_model,
+  enet = enet_model,
+  rf = rf_model,
+  earth = earth_model
+)
+
+predict_xgb <- function(model, newdata) { 
+  dtest <- xgb.DMatrix(data = as.matrix(newdata)) 
+  predict(model, dtest) } 
+ 
+stacked_predictions <- data.frame( xgb = predict_xgb(xgb_model, train_data), enet = predict(enet_model, train_d), rf = predict(rf_model, train_d), earth = predict(earth_model, train_d) ) 
+
+meta_model <- train( SalePrice ~ ., data = cbind(stacked_predictions, SalePrice = train_d$SalePrice), method = "glmnet" )
+
+```
+```{r}
+
+ensemble_model <- caretStack(
+  all.models = trained_models,
+  method = "rf",
+  metric = "RMSE",
+  trControl = stack_control
+)
+```
+```{r}
+print(ensemble_model)
+print(log(ensemble_model$error$RMSE))
+```
+```{r}
+test_predictions = predict(ensemble_model, newdata = test_d)
+```
+```{r}
+final_form <- data.frame(Id = test$Id, SalePrice = test_predictions)
+colnames(final_form)[2] = "SalePrice"
+final_form %>%
+  write.csv(file = "ashley_miller_666-1.csv", row.names = F, quote = F)
+```
+```{r}
+print(log(meta_model$results$RMSE))
+stacked_test_predictions <- data.frame(
+  xgb = predict_xgb(xgb_model, test_d),
+  enet = predict(enet_model, newdata = test_d),
+  rf = predict(rf_model, newdata = test_d),
+  earth = predict(earth_model, newdata = test_d)
+)
+
+test_predictions = predict(meta_model, newdata = stacked_test_predictions)
+
+```
+
+Kaggle Name: ashleymiller666
+Current score: 0.15910
+Current position: 3139
+
+
+

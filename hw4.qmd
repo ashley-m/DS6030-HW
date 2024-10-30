@@ -1,0 +1,226 @@
+---
+title: "Homework #4: Trees and Random Forest" 
+author: "**Ashley Miller**"
+format: ds6030hw-html
+---
+
+::: {style="background-color:yellow; color:red; display: block; border-color: black; padding:1em"}
+This is an **independent assignment**. Do not discuss or work with classmates.
+:::
+
+```{r config, include=FALSE}
+# Set global configurations and settings here
+knitr::opts_chunk$set()                 # set global chunk options
+ggplot2::theme_set(ggplot2::theme_bw()) # set ggplot2 theme
+```
+
+# Required R packages and Directories {.unnumbered .unlisted}
+
+```{r packages, message=FALSE, warning=FALSE}
+data_dir = 'https://mdporter.github.io/teaching/data/' # data directory
+library(tidyverse)    # functions for data manipulation  
+library(ranger)       # fast random forest implementation
+library(modeldata)    # for the ames housing data
+```
+
+# Problem 1: Tree splitting metrics for classification
+
+Consider the Gini index, classification error, and entropy impurity measures in a simple classification setting with two classes. 
+
+Create a single plot that displays each of these quantities as a function of $p_m$, the estimated probability of an observation in node $m$ being from class 1. The x-axis should display $p_m$, ranging from 0 to 1, and the y-axis should display the value of the Gini index, classification error, and entropy.
+
+::: {.callout-note title="Solution"}
+
+```{r}
+
+p_m <- seq(0.01,.99, by= 0.01)
+norm_p_m <- p_m/sum(p_m)
+data <- cbind(p_m, 1-p_m)
+
+miss_e <- function(p) 1-max(c(p, 1-p))
+
+gini_index <- function(p) {
+  return(1-sum(p^2))
+}
+
+entropy <- function(p) {
+  return(-sum(p*log(p)))
+}
+
+gini_values <- apply(data,1, gini_index)
+entropy_values <- apply(data, 1, entropy)
+miss_values <- apply(data, 1, miss_e)
+
+plot_data <- data.frame(
+  Probability = p_m,
+  Gini = gini_values,
+  Entropy = entropy_values,
+  Misclassification = miss_values
+)
+
+ggplot(plot_data, aes(x = Probability)) +
+  geom_line(aes(y = Gini, color = "Gini Index")) +
+  geom_line(aes(y = Entropy, color = "Entropy")) +
+  geom_line(aes(y = Misclassification, color = "Misclassification Error")) +
+  labs(title = "Comparing Impurity Measures",
+       x = "Probability of Class 1",
+       y = "Impurity Measure") +
+  scale_color_manual(values = c("blue", "red", "green")) +
+  theme_minimal() +
+  theme(legend.title = element_blank())
+```
+
+:::
+
+# Problem 2: Combining bootstrap estimates
+
+```{r, echo=FALSE}
+p_red = c(0.2, 0.25, 0.3, 0.4, 0.4, 0.45, 0.7, 0.85, 0.9, 0.9)
+```
+
+Suppose we produce ten bootstrapped samples from a data set containing red and green classes. We then apply a classification tree to each bootstrapped sample and, for a specific value of $X$, produce the following 10 estimates of $\Pr(\text{Class is Red} \mid X=x)$: $\{`r stringr::str_c(p_red, sep=", ")`\}$.
+
+## a. Majority Vote
+
+ISLR 8.2 describes the *majority vote* approach for making a hard classification from a set of bagged classifiers. What is the final classification for this example using majority voting?
+
+::: {.callout-note title="Solution"}
+```{r}
+library(DescTools)
+thresh <- 0.5
+class <- ifelse(p_red <=thresh, 0, 1)
+Mode(class)
+```
+For a threshold of 0.5, the classification by majority vote would be $\Pr(\text{Class is Red} \mid X = x) \leq 0.5$.
+:::
+
+## b. Average Probability
+
+An alternative is to base the final classification on the average probability. What is the final classification for this example using average probability?
+
+::: {.callout-note title="Solution"}
+```{r}
+print(mean(p_red))
+```
+The classification by average probability would be $\Pr(\text{Class is Red} \mid X = x) \gt 0.5$.
+:::
+
+
+# Problem 3: Random Forest Tuning 
+
+Random forest has several tuning parameters that you will explore in this problem. We will use the `ames` housing data from the `modeldata` R package.
+
+There are several R packages for Random Forest. The `ranger::ranger()` function is much faster than `randomForest::randomForest()` so we will use this one.
+
+
+## a. Random forest (`ranger`) tuning parameters 
+
+List all of the random forest tuning parameters in the `ranger::ranger()` function. You don't need to list the parameters related to computation, special models (e.g., survival, maxstat), or anything that won't impact the predictive performance. 
+
+Indicate the tuning parameters you think will be most important to optimize? 
+
+::: {.callout-note title="Solution"}
+num.trees, mtry, min.node.size, min.bucket, max.depth, replace, sample.fraction, case.weights, class.weights, split.select.weights, regularization.factor, regularization.usedepth, holdout. I think the min.node.size, mtry, min.bucket and num.trees parameters will be the most important.
+:::
+
+
+## b. Implement Random Forest
+
+Use a random forest model to predict the sales price, `Sale_Price`. Use the default parameters and report the 10-fold cross-validation RMSE (square root of mean squared error). 
+
+::: {.callout-note title="Solution"}
+```{r}
+set.seed(666)
+folds = 10
+data(ames)
+fold = sample(rep(1:folds, length=nrow(ames)))
+results = vector("list", folds)
+#- Iterate over folds
+for(j in 1:folds){
+  #-- Set training/val data
+  val = which(fold == j) # indices of holdout/validation data
+  train = which(fold != j) # indices of fitting/training data
+  n.val = length(val) # number of observations in validation
+  #- fit and evaluate models
+  rf_mod = ranger(
+        formula = Sale_Price~.,
+        data = ames[train, ]
+        )
+  
+  y_hat = predict(rf_mod, data = ames[val,])$predictions
+  
+  y = ames$Sale_Price[val]
+  
+  rmse = sqrt(mean((y_hat-y)^2))
+  
+  results[[j]] = list(fold = j, n.val = n.val, rmse = rmse)
+}
+
+RESULTS = bind_rows(results)
+print(mean(RESULTS$rmse))
+```
+:::
+
+
+
+## c. Random Forest Tuning
+
+Now we will vary the tuning parameters of `mtry` and `min.bucket` to see what effect they have on performance. 
+
+- Use a range of reasonable `mtry` and `min.bucket` values. 
+    - The valid `mtry` values are $\{1,2, \ldots, p\}$ where $p$ is the number of predictor variables. However the default value of `mtry = sqrt(p) =` `r sqrt(ncol(ames)-1) %>% floor()` is usually close to optimal, so you may want to focus your search around those values. 
+    - The default `min.bucket=1` will grow deep trees. This will usually work best if there are enough trees. But try some values larger and see how it impacts predictive performance. 
+    - Set `num.trees=1000`, which is larger than the default of 500. 
+- Use 5 times repeated out-of-bag (OOB) to assess performance. That is, run random forest 5 times for each tuning set, calculate the OOB MSE each time and use the average for the MSE associated with the tuning parameters.
+- Use a single plot to show the average MSE as a function of `mtry` and `min.bucket`.
+- Report the best tuning parameter combination. 
+- Note: random forest is a stochastic model; it will be different every time it runs due to the bootstrap sampling and random selection of features to consider for splitting. Set the random seed to control the uncertainty associated with the stochasticity. 
+- Hint: If you use the `ranger` package, the `prediction.error` element in the output is the OOB MSE. 
+
+
+::: {.callout-note title="Solution"}
+```{r}
+folds = 5
+results = list()
+for(opt_mtry in seq(4,24)){
+#- Iterate over folds
+for(buck in seq(1,3)){
+  OOB = numeric(folds)
+for(j in 1:folds){
+  #- fit and evaluate models
+  rf_mod = ranger(
+        formula = Sale_Price~.,
+        data = ames,
+        mtry = opt_mtry,
+        min.bucket = buck,
+        num.trees = 1000,
+        seed = j
+        )
+  
+  OOB[j] = rf_mod$prediction.error
+}  
+  results = rbind(results, list(mse = mean(OOB), min.bucket = buck, mtry = opt_mtry))
+
+}
+}
+
+```
+```{r}
+RESULTS = as.data.frame(results)
+RESULTS$mtry <- unlist(RESULTS$mtry)
+RESULTS$min.bucket <- unlist(RESULTS$min.bucket)
+RESULTS$mse <- unlist(RESULTS$mse)
+
+RESULTS %>%
+  ggplot(aes(x=mtry, y= mse)) +
+  geom_point(aes(color = min.bucket)) +
+  labs(title = "Varying mtry and min.bucket",
+       x = "mtry",
+       y = "mse",
+       color = "min.bucket")
+print(min(RESULTS$mse))
+print(RESULTS$mtry[which.min(RESULTS$mse)])
+print(RESULTS$min.bucket[which.min(RESULTS$mse)])
+```
+:::
+
