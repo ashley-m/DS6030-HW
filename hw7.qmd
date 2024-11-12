@@ -300,7 +300,7 @@ predict_xgb <- function(model, newdata) {
  
 stacked_predictions <- data.frame( xgb = predict_xgb(xgb_model, train_data), enet = predict(enet_model, train_d), rf = predict(rf_model, train_d), earth = predict(earth_model, train_d) ) 
 
-meta_model <- train( SalePrice ~ ., data = cbind(stacked_predictions, SalePrice = train_d$SalePrice), method = "glmnet" )
+meta_model <- train( SalePrice ~ ., data = cbind(stacked_predictions, SalePrice = train_d$SalePrice), method = "rf" )
 
 ```
 ```{r}
