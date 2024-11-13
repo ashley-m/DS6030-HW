@@ -14,7 +14,8 @@ ggplot2::theme_set(ggplot2::theme_bw()) # set ggplot2 theme
 
 ```{r packages, message=FALSE, warning=FALSE}
 dir_data = 'https://mdporter.github.io/teaching/data/' # data directory
-library(tidyverse) # functions for data manipulation   
+library(tidyverse) # functions for data manipulation
+library(tidymodels)
 ```
 
 
@@ -39,7 +40,42 @@ titanic_test <- read_csv(file.path(dir_data, "titanic_test.csv"))
 head(titanic_train)
 head(titanic_test)
 
+titanic_train <- titanic_train %>%
+  mutate(across(where(is.character), as.factor),
+         Survived = as.factor(Survived))
+
+titanic_test <- titanic_test %>%
+  mutate(across(where(is.character), as.factor),
+         Survived = as.factor(Survived))
+
+table(titanic_train$Job)
 ```
+```{r}
+# Count the number of missing values in each column
+missing_values <- sapply(titanic_train, function(x) sum(is.na(x)))
+
+# Create a dataframe to view the missing values count
+missing_values_df <- data.frame(Feature = names(missing_values),
+                                MissingValues = missing_values)
+
+# Sort the missing values in descending order
+missing_values_df <- missing_values_df[order(missing_values_df$MissingValues, decreasing = TRUE), ]
+
+print(missing_values_df)
+
+```
+```{r}
+titanic_train <- titanic_train[, !names(titanic_train) %in% c("Job", "Occupation")]
+titanic_train <- titanic_train %>%
+  mutate(
+    Fare = ifelse(is.na(Fare), mean(Fare, na.rm = TRUE), Fare),
+    Age = ifelse(is.na(Age), mean(Age, na.rm = TRUE), Age),
+    Class = as.factor(Class),
+    Name_ID = as.factor(Name_ID)
+  )
+
+```
+
 :::
 
 ## b. Method 1: Built-in importance scores
@@ -49,7 +85,111 @@ Fit a tree ensemble model (e.g., Random Forest, boosted tree) on the training da
 Report the built-in feature importance scores and produce a barplot with feature on the x-axis and importance on the y-axis. 
 
 ::: {.callout-note title="Solution"}
-Add solution here
+```{r}
+head(titanic_train)
+summary(titanic_train)
+```
+
+```{r}
+library(adabag)
+library(foreach)
+library(doParallel)
+
+# Detect the number of available cores
+num_cores <- detectCores()
+
+# Set up parallel backend
+cl <- makeCluster(num_cores)
+registerDoParallel(cl)
+
+# Function to combine models
+combine_models <- function(x, y) {
+  x$trees <- c(x$trees, y$trees)
+  x$weights <- c(x$weights, y$weights)
+  x
+}
+
+# Define control parameters for decision trees
+control_params <- rpart.control(maxdepth = 1)
+
+# Fit AdaBoost model in parallel
+set.seed(666)
+ada_models <- foreach(i = 1:16, .packages = 'adabag') %dopar% {
+  boosting(Survived ~ Class + Sex + Age + Fare + sibsp + parch + Joined, 
+           data = titanic_train, 
+           boos = TRUE, 
+           mfinal = 13, 
+           control = control_params)
+}
+
+# Combine models sequentially
+ada_model <- Reduce(combine_models, ada_models)
+
+stopCluster(cl)
+registerDoSEQ()
+
+# Display the combined model
+print(ada_model)
+
+```
+```{r}
+control_params <- rpart.control(maxdepth = 1)
+ada_model = boosting(Survived ~ Class + Sex + Age + Fare + sibsp + parch + Joined, 
+           data = titanic_train, 
+           boos = TRUE, 
+           mfinal = 13, 
+           control = control_params)
+```
+
+
+```{r}
+
+# Get feature importance scores
+importance_scores <- ada_model$importance
+
+# Convert to a data frame for plotting
+importance_df <- as.data.frame(importance_scores)
+importance_df$Feature <- rownames(importance_df)
+importance_df <- importance_df %>%
+  rownames_to_column(var = "Feature") %>%
+  rename(Importance = V1)
+
+# Plot feature importance
+ggplot(importance_df, aes(x = reorder(Feature, Importance), y = Importance)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(title = "Feature Importance in AdaBoost Model",
+       x = "Feature",
+       y = "Importance") +
+  theme_minimal()
+
+```
+```{r}
+library(ranger)
+
+set.seed(666)
+
+# Train the model
+rf_model <- ranger(Survived ~ Class + Sex + Age + Fare + sibsp + parch + Joined,
+                   data = titanic_train, num.trees = 100,
+                   importance = 'impurity')
+
+```
+```{r}
+# Get importance scores
+importance_scores <- rf_model$variable.importance
+
+# Create a dataframe to view the feature importance
+importance_df <- data.frame(Feature = names(importance_scores),
+                            Importance = importance_scores)
+
+# Sort the importance scores in descending order
+importance_df <- importance_df[order(importance_df$Importance, decreasing = TRUE), ]
+
+print(importance_df)
+```
+
+
 :::
 
 ## c. Performance 
