@@ -40,13 +40,7 @@ titanic_test <- read_csv(file.path(dir_data, "titanic_test.csv"))
 head(titanic_train)
 head(titanic_test)
 
-titanic_train <- titanic_train %>%
-  mutate(across(where(is.character), as.factor),
-         Survived = as.factor(Survived))
 
-titanic_test <- titanic_test %>%
-  mutate(across(where(is.character), as.factor),
-         Survived = as.factor(Survived))
 
 table(titanic_train$Job)
 ```
@@ -74,6 +68,15 @@ titanic_train <- titanic_train %>%
     Name_ID = as.factor(Name_ID)
   )
 
+titanic_test <- titanic_test[, !names(titanic_test) %in% c("Job", "Occupation")]
+titanic_test <- titanic_test %>%
+  mutate(
+    Fare = ifelse(is.na(Fare), mean(Fare, na.rm = TRUE), Fare),
+    Age = ifelse(is.na(Age), mean(Age, na.rm = TRUE), Age),
+    Class = as.factor(Class),
+    Name_ID = as.factor(Name_ID)
+  )
+
 ```
 
 :::
@@ -91,74 +94,55 @@ summary(titanic_train)
 ```
 
 ```{r}
-library(adabag)
-library(foreach)
-library(doParallel)
+library(xgboost)
+library(caret)
 
-# Detect the number of available cores
-num_cores <- detectCores()
+# Data preparation
+features <- titanic_train[, -which(names(titanic_train) %in% c("Survived"))]
+labels <- titanic_train$Survived
 
-# Set up parallel backend
-cl <- makeCluster(num_cores)
-registerDoParallel(cl)
+dummies <- dummyVars(~ ., data = features)
+one_hot_data <- predict(dummies, newdata = features)
 
-# Function to combine models
-combine_models <- function(x, y) {
-  x$trees <- c(x$trees, y$trees)
-  x$weights <- c(x$weights, y$weights)
-  x
-}
+data_matrix <- as.matrix(one_hot_data)
+label_vector <- as.numeric(labels)
 
-# Define control parameters for decision trees
-control_params <- rpart.control(maxdepth = 1)
+# xgboost parameters
+params <- list(
+  booster = "gbtree",
+  objective = "binary:logistic",
+  eta = 0.1,
+  max_depth = 3,
+  nthread = parallel::detectCores()
+)
 
-# Fit AdaBoost model in parallel
+dtrain <- xgb.DMatrix(data = data_matrix, label = label_vector)
+
 set.seed(666)
-ada_models <- foreach(i = 1:16, .packages = 'adabag') %dopar% {
-  boosting(Survived ~ Class + Sex + Age + Fare + sibsp + parch + Joined, 
-           data = titanic_train, 
-           boos = TRUE, 
-           mfinal = 13, 
-           control = control_params)
-}
+xgb_model <- xgb.train(
+  params = params,
+  data = dtrain,
+  nrounds = 100,
+  verbose = 1
+)
 
-# Combine models sequentially
-ada_model <- Reduce(combine_models, ada_models)
-
-stopCluster(cl)
-registerDoSEQ()
-
-# Display the combined model
-print(ada_model)
-
-```
-```{r}
-control_params <- rpart.control(maxdepth = 1)
-ada_model = boosting(Survived ~ Class + Sex + Age + Fare + sibsp + parch + Joined, 
-           data = titanic_train, 
-           boos = TRUE, 
-           mfinal = 13, 
-           control = control_params)
 ```
 
 
 ```{r}
 
 # Get feature importance scores
-importance_scores <- ada_model$importance
+importance_scores <- xgb.importance(model = xgb_model)
 
-# Convert to a data frame for plotting
-importance_df <- as.data.frame(importance_scores)
-importance_df$Feature <- rownames(importance_df)
-importance_df <- importance_df %>%
-  rownames_to_column(var = "Feature") %>%
-  rename(Importance = V1)
+# Rename 'Gain' to 'Importance'
+importance_df <- importance_scores %>%
+  rename(Importance = Gain)
 
 # Plot feature importance
 ggplot(importance_df, aes(x = reorder(Feature, Importance), y = Importance)) +
   geom_bar(stat = "identity") +
   coord_flip() +
-  labs(title = "Feature Importance in AdaBoost Model",
+  labs(title = "Feature Importance in XGBoost Model",
        x = "Feature",
        y = "Importance") +
   theme_minimal()
@@ -187,6 +171,13 @@ importance_df <- data.frame(Feature = names(importance_scores),
 importance_df <- importance_df[order(importance_df$Importance, decreasing = TRUE), ]
 
 print(importance_df)
+ggplot(importance_df, aes(x = reorder(Feature, Importance), y = Importance)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(title = "Feature Importance in XGBoost Model",
+       x = "Feature",
+       y = "Importance") +
+  theme_minimal()
 ```
 
 
@@ -200,7 +191,69 @@ $$
 $$
 
 ::: {.callout-note title="Solution"}
-Add solution here
+```{r}
+comb = rbind(features_train, features_test)
+# Prepare the training data
+features_train <- titanic_train[, -which(names(titanic_train) %in% c("Survived", "Job", "Occupation"))]
+labels_train <- titanic_train$Survived
+
+dummies <- dummyVars(~ ., data = comb)
+one_hot_train <- predict(dummies, newdata = features_train)
+
+# Prepare the test data
+features_test <- titanic_test[, -which(names(titanic_test) %in% c("Survived", "Job", "Occupation"))]
+one_hot_test <- predict(dummies, newdata = features_test)
+
+# Convert to matrices
+train_matrix <- as.matrix(one_hot_train)
+test_matrix <- as.matrix(one_hot_test)
+
+# Align columns by adding missing columns with zeros in the test set
+missing_cols <- setdiff(colnames(train_matrix), colnames(test_matrix))
+for (col in missing_cols) {
+  test_matrix <- cbind(test_matrix, matrix(0, nrow = nrow(test_matrix), ncol = 1)) 
+  colnames(test_matrix)[ncol(test_matrix)] <- col
+}
+# Ensure columns are in the same order
+test_matrix <- test_matrix[, colnames(train_matrix)]
+
+# Convert labels to numeric
+label_train_vector <- as.numeric(labels_train)
+label_test_vector <- as.numeric(titanic_test$Survived)
+
+# Create DMatrix for training and test data
+dtrain <- xgb.DMatrix(data = train_matrix, label = label_train_vector)
+dtest <- xgb.DMatrix(data = test_matrix, label = label_test_vector)
+
+# Set xgboost parameters
+params <- list(
+  booster = "gbtree",
+  objective = "binary:logistic",
+  eta = 0.1,
+  max_depth = 3,
+  nthread = parallel::detectCores()
+)
+
+# Train the xgboost model
+set.seed(666)
+xgb_model <- xgb.train(
+  params = params,
+  data = dtrain,
+  nrounds = 100,
+  verbose = 1
+)
+
+# Generate predictions for the test set
+predicted_probs <- predict(xgb_model, dtest)
+
+# Compute log-loss for the test set
+log_loss <- -mean(label_test_vector * log(predicted_probs) + (1 - label_test_vector) * log(1 - predicted_probs))
+
+# Print log-loss
+print(log_loss)
+
+```
+
 :::
 
 
