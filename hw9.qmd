@@ -16,6 +16,7 @@ ggplot2::theme_set(ggplot2::theme_bw()) # set ggplot2 theme
 dir_data = 'https://mdporter.github.io/teaching/data/' # data directory
 library(tidyverse) # functions for data manipulation
 library(tidymodels)
+library(ranger)
 ```
 
 
@@ -37,12 +38,11 @@ Use `Class`, `Sex`, `Age`, `Fare`, `sibsp` (number of siblings or spouse on boar
 titanic_train <- read_csv(file.path(dir_data, "titanic_train.csv"))
 titanic_test <- read_csv(file.path(dir_data, "titanic_test.csv"))
 
-head(titanic_train)
-head(titanic_test)
+titanic_train <- titanic_train %>%
+  mutate(Survived = as.factor(Survived))
+titanic_test <- titanic_test %>%
+  mutate(Survived = as.factor(Survived))
 
-
-
-table(titanic_train$Job)
 ```
 ```{r}
 # Count the number of missing values in each column
@@ -58,26 +58,7 @@ missing_values_df <- missing_values_df[order(missing_values_df$MissingValues, de
 print(missing_values_df)
 
 ```
-```{r}
-titanic_train <- titanic_train[, !names(titanic_train) %in% c("Job", "Occupation")]
-titanic_train <- titanic_train %>%
-  mutate(
-    Fare = ifelse(is.na(Fare), mean(Fare, na.rm = TRUE), Fare),
-    Age = ifelse(is.na(Age), mean(Age, na.rm = TRUE), Age),
-    Class = as.factor(Class),
-    Name_ID = as.factor(Name_ID)
-  )
 
-titanic_test <- titanic_test[, !names(titanic_test) %in% c("Job", "Occupation")]
-titanic_test <- titanic_test %>%
-  mutate(
-    Fare = ifelse(is.na(Fare), mean(Fare, na.rm = TRUE), Fare),
-    Age = ifelse(is.na(Age), mean(Age, na.rm = TRUE), Age),
-    Class = as.factor(Class),
-    Name_ID = as.factor(Name_ID)
-  )
-
-```
 
 :::
 
@@ -92,95 +73,56 @@ Report the built-in feature importance scores and produce a barplot with feature
 head(titanic_train)
 summary(titanic_train)
 ```
-
 ```{r}
-library(xgboost)
-library(caret)
+titanic_recipe <- recipe(Survived ~ Class + Sex + Age + Fare + sibsp + parch + Joined, data = titanic_train) %>%
+  step_impute_median(Age, Fare) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_normalize(all_numeric_predictors())
 
-# Data preparation
-features <- titanic_train[, -which(names(titanic_train) %in% c("Survived"))]
-labels <- titanic_train$Survived
+ranger_model <- rand_forest(mtry = tune(), trees = tune()) %>%
+  set_engine("ranger", importance = "permutation") %>%
+  set_mode("classification")
 
-dummies <- dummyVars(~ ., data = features)
-one_hot_data <- predict(dummies, newdata = features)
+titanic_workflow <- workflow() %>%
+  add_recipe(titanic_recipe) %>%
+  add_model(ranger_model)
 
-data_matrix <- as.matrix(one_hot_data)
-label_vector <- as.numeric(labels)
+tune_grid <- grid_regular(mtry(range = c(1, 5)), 
+                          trees(range = c(500, 1500)), 
+                          levels = 5)
 
-# xgboost parameters
-params <- list(
-  booster = "gbtree",
-  objective = "binary:logistic",
-  eta = 0.1,
-  max_depth = 3,
-  nthread = parallel::detectCores()
-)
+set.seed(666) 
+cv_folds <- vfold_cv(titanic_train, v = 5)
 
-dtrain <- xgb.DMatrix(data = data_matrix, label = label_vector)
+tuned_results <- titanic_workflow %>% 
+  tune_grid(resamples = cv_folds, grid = tune_grid, 
+             control = control_grid(save_pred = TRUE))
 
-set.seed(666)
-xgb_model <- xgb.train(
-  params = params,
-  data = dtrain,
-  nrounds = 100,
-  verbose = 1
-)
 
+best_results <- tuned_results %>% select_best(metric = "accuracy") 
+
+final_workflow <- titanic_workflow %>% finalize_workflow(best_results) 
+
+final_fit <- final_workflow %>% fit(data = titanic_train)
 ```
 
 
 ```{r}
+library(vip)
 
-# Get feature importance scores
-importance_scores <- xgb.importance(model = xgb_model)
+feature_importance <- vi(final_fit)
 
-# Rename 'Gain' to 'Importance'
-importance_df <- importance_scores %>%
-  rename(Importance = Gain)
+vi_df <- as.data.frame(feature_importance)
 
-# Plot feature importance
-ggplot(importance_df, aes(x = reorder(Feature, Importance), y = Importance)) +
-  geom_bar(stat = "identity") +
-  coord_flip() +
-  labs(title = "Feature Importance in XGBoost Model",
+
+ggplot(vi_df, aes(x = reorder(Variable, Importance), y = Importance)) +
+  geom_bar(stat = "identity", fill = "blue") +
+  theme_minimal() +
+  labs(title = "Variable Importance Plot",
        x = "Feature",
        y = "Importance") +
-  theme_minimal()
-
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
 ```
-```{r}
-library(ranger)
-
-set.seed(666)
-
-# Train the model
-rf_model <- ranger(Survived ~ Class + Sex + Age + Fare + sibsp + parch + Joined,
-                   data = titanic_train, num.trees = 100,
-                   importance = 'impurity')
-
-```
-```{r}
-# Get importance scores
-importance_scores <- rf_model$variable.importance
-
-# Create a dataframe to view the feature importance
-importance_df <- data.frame(Feature = names(importance_scores),
-                            Importance = importance_scores)
-
-# Sort the importance scores in descending order
-importance_df <- importance_df[order(importance_df$Importance, decreasing = TRUE), ]
-
-print(importance_df)
-ggplot(importance_df, aes(x = reorder(Feature, Importance), y = Importance)) +
-  geom_bar(stat = "identity") +
-  coord_flip() +
-  labs(title = "Feature Importance in XGBoost Model",
-       x = "Feature",
-       y = "Importance") +
-  theme_minimal()
-```
-
-
 :::
 
 ## c. Performance 
@@ -192,65 +134,27 @@ $$
 
 ::: {.callout-note title="Solution"}
 ```{r}
-comb = rbind(features_train, features_test)
-# Prepare the training data
-features_train <- titanic_train[, -which(names(titanic_train) %in% c("Survived", "Job", "Occupation"))]
-labels_train <- titanic_train$Survived
+library(yardstick)
 
-dummies <- dummyVars(~ ., data = comb)
-one_hot_train <- predict(dummies, newdata = features_train)
+titanic_predictions <- final_fit %>%
+  predict(new_data = titanic_test, type = "prob") %>%
+  bind_cols(titanic_test)
 
-# Prepare the test data
-features_test <- titanic_test[, -which(names(titanic_test) %in% c("Survived", "Job", "Occupation"))]
-one_hot_test <- predict(dummies, newdata = features_test)
+log_loss_result <- titanic_predictions %>%
+  mn_log_loss(truth = Survived, .pred_1)
 
-# Convert to matrices
-train_matrix <- as.matrix(one_hot_train)
-test_matrix <- as.matrix(one_hot_test)
+actual <- as.numeric(titanic_predictions$Survived)
+predicted <- titanic_predictions$.pred_1
 
-# Align columns by adding missing columns with zeros in the test set
-missing_cols <- setdiff(colnames(train_matrix), colnames(test_matrix))
-for (col in missing_cols) {
-  test_matrix <- cbind(test_matrix, matrix(0, nrow = nrow(test_matrix), ncol = 1)) 
-  colnames(test_matrix)[ncol(test_matrix)] <- col
+
+log_loss_manual <- function(actual, predicted,epsilon = 1e-15) { 
+  predicted <- pmax(pmin(predicted, 1 - epsilon), epsilon)
+  M <- length(actual) 
+  log_loss <- - (1 / M) * sum(actual * log(predicted) + (1 - actual)*log(1-predicted))
 }
-# Ensure columns are in the same order
-test_matrix <- test_matrix[, colnames(train_matrix)]
+log_loss_result_man <- log_loss_manual(actual, predicted)
 
-# Convert labels to numeric
-label_train_vector <- as.numeric(labels_train)
-label_test_vector <- as.numeric(titanic_test$Survived)
-
-# Create DMatrix for training and test data
-dtrain <- xgb.DMatrix(data = train_matrix, label = label_train_vector)
-dtest <- xgb.DMatrix(data = test_matrix, label = label_test_vector)
-
-# Set xgboost parameters
-params <- list(
-  booster = "gbtree",
-  objective = "binary:logistic",
-  eta = 0.1,
-  max_depth = 3,
-  nthread = parallel::detectCores()
-)
-
-# Train the xgboost model
-set.seed(666)
-xgb_model <- xgb.train(
-  params = params,
-  data = dtrain,
-  nrounds = 100,
-  verbose = 1
-)
-
-# Generate predictions for the test set
-predicted_probs <- predict(xgb_model, dtest)
-
-# Compute log-loss for the test set
-log_loss <- -mean(label_test_vector * log(predicted_probs) + (1 - label_test_vector) * log(1 - predicted_probs))
-
-# Print log-loss
-print(log_loss)
+print(log_loss_result)
 
 ```
 
@@ -262,7 +166,55 @@ print(log_loss)
 Use the fitted model from question (a.) to perform permutation feature importance. Shuffle/permute each variable individually on the *test set* before making predictions. Record the loss. Repeat $M=10$ times and produce a boxplot of the change in loss (change from reported loss from part b.). 
 
 ::: {.callout-note title="Solution"}
-Add solution here
+```{r}
+
+baseline_preds <- predict(final_fit, titanic_test, type = "prob") %>% bind_cols(titanic_test)
+baseline_loss <- baseline_preds %>%
+  mn_log_loss(truth = Survived, .pred_1) %>%
+  pull(.estimate)
+
+
+set.seed(666)
+M <- 10
+specified_predictors <- c("Class", "Sex", "Age", "Fare", "sibsp", "parch", "Joined")
+feature_importance <- list()
+
+for (col in specified_predictors) {
+  losses <- numeric(M)
+  
+  for (i in 1:M) {
+    permuted_test <- titanic_test %>%
+      mutate(!!col := sample(!!sym(col)))
+    
+    permuted_preds <- predict(final_fit, permuted_test, type = "prob") %>%
+      bind_cols(permuted_test)
+    
+    permuted_loss <- permuted_preds %>%
+      mn_log_loss(truth = Survived, .pred_1) %>%
+      pull(.estimate)
+    
+    losses[i] <- permuted_loss - baseline_loss
+  }
+  
+  feature_importance[[col]] <- losses
+}
+
+vi_df <- do.call(rbind, lapply(names(feature_importance), function(x) {
+  data.frame(Variable = x, ChangeInLoss = feature_importance[[x]])
+})) %>%
+  as_tibble()
+
+
+ggplot(vi_df, aes(x = reorder(Variable, ChangeInLoss), y = ChangeInLoss)) +
+  geom_boxplot() +
+  labs(title = "Test Set Permutation Feature Importance",
+       x = "Features",
+       y = "Change in Loss") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+
+```
+
 :::
 
 ## e. Method 3: Permute *before* fitting
@@ -270,7 +222,59 @@ Add solution here
 For this approach, shuffle/permute the *training data* and re-fit the ensemble model. Evaluate the predictions on the (unaltered) test data. Repeat $M=10$ times (for each predictor variable) and produce a boxplot of the change in loss. 
 
 ::: {.callout-note title="Solution"}
-Add solution here
+```{r}
+permute_fit <- function(train_data, test_data, final_workflow, col, M = 10) {
+  losses <- numeric(M)
+  
+  for (i in 1:M) {
+    permuted_train <- train_data %>%
+      mutate(!!col := sample(!!sym(col)))
+    
+    permuted_fit <- final_workflow %>% fit(data = permuted_train)
+    
+
+    permuted_preds <- predict(permuted_fit, test_data, type = "prob") %>%
+      bind_cols(test_data)
+    
+    permuted_loss <- permuted_preds %>%
+      mn_log_loss(truth = Survived, .pred_1) %>%
+      pull(.estimate)
+    
+    losses[i] <- permuted_loss
+  }
+  
+  return(losses)
+}
+
+final_fit <- final_workflow %>% fit(data = titanic_train)
+baseline_preds <- predict(final_fit, titanic_test, type = "prob") %>% bind_cols(titanic_test)
+baseline_loss <- baseline_preds %>%
+  mn_log_loss(truth = Survived, .pred_1) %>%
+  pull(.estimate)
+
+set.seed(666)
+specified_predictors <- c("Class", "Sex", "Age", "Fare", "sibsp", "parch", "Joined")
+feature_importance <- list()
+
+for (col in specified_predictors) {
+  losses <- permute_fit(titanic_train, titanic_test, final_workflow, col, M = 10)
+  feature_importance[[col]] <- losses - baseline_loss
+}
+
+vi_df <- do.call(rbind, lapply(names(feature_importance), function(x) {
+  data.frame(Variable = x, ChangeInLoss = feature_importance[[x]])
+})) %>%
+  as_tibble()
+
+ggplot(vi_df, aes(x = reorder(Variable, ChangeInLoss), y = ChangeInLoss)) +
+  geom_boxplot() +
+  labs(title = "Training Set Permutation Feature Importance Pre-fit",
+       x = "Features",
+       y = "Change in Loss") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+```
+
 :::
 
 
@@ -279,7 +283,7 @@ Add solution here
 Describe the benefits of each of the three approaches to measure feature importance. 
 
 ::: {.callout-note title="Solution"}
-Add solution here
+The first method with built in scores is useful when the package has the functionality natively as it is efficient and is interpretable since it is tailored to the model. It doesn't, however, allow us to prescribe the metric as we are limited to the choices made by the package creator, and also doesn't work with models that don't build in importance scores. It also gives us a point estimate as opposed to a set of values. The second method is useful because it is generalizable to any model, and tells us more about how a certain predictor affects model performance. It also isn't computationally intensive like the last method. The third method tells us more about how each predictor affects the model's ability to learn from the training data.
 :::
 
 # Problem 2: Effects of correlated predictors
@@ -291,7 +295,28 @@ This problem will illustrate what happens to the importance scores when there ar
 Create a new feature `Sex2` that is 95% the same as `Sex`. Do this by selecting 5% of training ($n=50$) and testing ($n=15$) data and flip the `Sex` value. 
 
 ::: {.callout-note title="Solution"}
-Add solution here
+```{r}
+set.seed(666)
+n_train <- nrow(titanic_train)
+n_flip_train <- ceiling(0.05 * n_train)
+
+titanic_train <- titanic_train %>%
+  mutate(Sex2 = Sex) %>%  
+  mutate(Sex2 = ifelse(row_number() %in% sample(n_train, n_flip_train), 
+                       ifelse(Sex == "male", "female", "male"), 
+                       Sex))
+
+set.seed(666)
+n_test <- nrow(titanic_test)
+n_flip_test <- ceiling(0.05 * n_test)
+
+titanic_test <- titanic_test %>%
+  mutate(Sex2 = Sex) %>%  
+  mutate(Sex2 = ifelse(row_number() %in% sample(n_test, n_flip_test), 
+                       ifelse(Sex == "male", "female", "male"), 
+                       Sex))
+```
+
 :::
 
 ## b. Method 1: Built-in importance
@@ -299,7 +324,60 @@ Add solution here
 Fit the same model as in Problem 1b, but use the new data that includes `Sex2` (i.e., use both `Sex` and `Sex2` in the model). Calculate the built-in feature importance score and produce a barplot. 
 
 ::: {.callout-note title="Solution"}
-Add solution here
+```{r}
+titanic_recipe <- recipe(Survived ~ Class + Sex + Sex2 + Age + Fare + sibsp + parch + Joined, data = titanic_train) %>%
+  step_impute_median(Age, Fare) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_normalize(all_numeric_predictors())
+
+ranger_model <- rand_forest(mtry = tune(), trees = tune()) %>%
+  set_engine("ranger", importance = "permutation") %>%
+  set_mode("classification")
+
+titanic_workflow <- workflow() %>%
+  add_recipe(titanic_recipe) %>%
+  add_model(ranger_model)
+
+tune_grid <- grid_regular(mtry(range = c(1, 5)), 
+                          trees(range = c(500, 1500)), 
+                          levels = 5)
+
+set.seed(666) 
+cv_folds <- vfold_cv(titanic_train, v = 5)
+
+tuned_results <- titanic_workflow %>% 
+  tune_grid(resamples = cv_folds, grid = tune_grid, 
+             control = control_grid(save_pred = TRUE))
+
+
+best_results <- tuned_results %>% select_best(metric = "accuracy") 
+
+final_workflow <- titanic_workflow %>% finalize_workflow(best_results) 
+
+final_fit <- final_workflow %>% fit(data = titanic_train)
+```
+
+
+```{r}
+
+
+feature_importance <- vi(final_fit)
+
+vi_df <- as.data.frame(feature_importance)
+
+
+ggplot(vi_df, aes(x = reorder(Variable, Importance), y = Importance)) +
+  geom_bar(stat = "identity", fill = "blue") +
+  theme_minimal() +
+  labs(title = "Variable Importance Plot",
+       x = "Feature",
+       y = "Importance") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+
+```
+
+
 :::
 
 ## c. Method 2: Permute *after* fitting
@@ -307,7 +385,52 @@ Add solution here
 Redo Method 2 (problem 1d) on the new data/model and produce a boxplot of importance scores. The importance score is defined as the difference in loss.
 
 ::: {.callout-note title="Solution"}
-Add solution here
+```{r}
+baseline_preds <- predict(final_fit, titanic_test, type = "prob") %>% bind_cols(titanic_test)
+baseline_loss <- baseline_preds %>%
+  mn_log_loss(truth = Survived, .pred_1) %>%
+  pull(.estimate)
+
+
+set.seed(666)
+M <- 10
+specified_predictors <- c("Class", "Sex", "Sex2", "Age", "Fare", "sibsp", "parch", "Joined")
+feature_importance <- list()
+
+for (col in specified_predictors) {
+  losses <- numeric(M)
+  
+  for (i in 1:M) {
+    permuted_test <- titanic_test %>%
+      mutate(!!col := sample(!!sym(col)))
+    
+    permuted_preds <- predict(final_fit, permuted_test, type = "prob") %>%
+      bind_cols(permuted_test)
+    
+    permuted_loss <- permuted_preds %>%
+      mn_log_loss(truth = Survived, .pred_1) %>%
+      pull(.estimate)
+    
+    losses[i] <- permuted_loss - baseline_loss
+  }
+  
+  feature_importance[[col]] <- losses
+}
+
+vi_df <- do.call(rbind, lapply(names(feature_importance), function(x) {
+  data.frame(Variable = x, ChangeInLoss = feature_importance[[x]])
+})) %>%
+  as_tibble()
+
+
+ggplot(vi_df, aes(x = reorder(Variable, ChangeInLoss), y = ChangeInLoss)) +
+  geom_boxplot() +
+  labs(title = "Test Set Permutation Feature Importance",
+       x = "Features",
+       y = "Change in Loss") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
 :::
 
 ## d. Method 3: Permute *before* fitting
@@ -315,7 +438,59 @@ Add solution here
 Redo Method 3 (problem 1e) on the new data and produce a boxplot of importance scores. The importance score is defined as the difference in loss.
 
 ::: {.callout-note title="Solution"}
-Add solution here
+```{r}
+permute_fit <- function(train_data, test_data, final_workflow, col, M = 10) {
+  losses <- numeric(M)
+  
+  for (i in 1:M) {
+    permuted_train <- train_data %>%
+      mutate(!!col := sample(!!sym(col)))
+    
+    permuted_fit <- final_workflow %>% fit(data = permuted_train)
+    
+
+    permuted_preds <- predict(permuted_fit, test_data, type = "prob") %>%
+      bind_cols(test_data)
+    
+    permuted_loss <- permuted_preds %>%
+      mn_log_loss(truth = Survived, .pred_1) %>%
+      pull(.estimate)
+    
+    losses[i] <- permuted_loss
+  }
+  
+  return(losses)
+}
+
+final_fit <- final_workflow %>% fit(data = titanic_train)
+baseline_preds <- predict(final_fit, titanic_test, type = "prob") %>% bind_cols(titanic_test)
+baseline_loss <- baseline_preds %>%
+  mn_log_loss(truth = Survived, .pred_1) %>%
+  pull(.estimate)
+
+set.seed(666)
+specified_predictors <- c("Class", "Sex", "Sex2", "Age", "Fare", "sibsp", "parch", "Joined")
+feature_importance <- list()
+
+for (col in specified_predictors) {
+  losses <- permute_fit(titanic_train, titanic_test, final_workflow, col, M = 10)
+  feature_importance[[col]] <- losses - baseline_loss
+}
+
+vi_df <- do.call(rbind, lapply(names(feature_importance), function(x) {
+  data.frame(Variable = x, ChangeInLoss = feature_importance[[x]])
+})) %>%
+  as_tibble()
+
+ggplot(vi_df, aes(x = reorder(Variable, ChangeInLoss), y = ChangeInLoss)) +
+  geom_boxplot() +
+  labs(title = "Training Set Permutation Feature Importance Pre-fit",
+       x = "Features",
+       y = "Change in Loss") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+```
+
 :::
 
 ## e. Understanding
@@ -323,6 +498,6 @@ Add solution here
 Describe how the addition of the almost duplicated predictor impacted the feature importance results.  
 
 ::: {.callout-note title="Solution"}
-Add solution here
+Our built in feature importance did not rank the duplicate noisy predictor nearly as high as the original. Permuting the test set made the original most important variable, Sex, even more important and Sex2 was not impactful in the change in loss. Permuting the training set resulted in a smaller change in loss for the original variable, perhaps because the noisy version picked up some of the slack.
 :::
 
