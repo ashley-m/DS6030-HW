@@ -141,13 +141,13 @@ titanic_predictions <- final_fit %>%
   bind_cols(titanic_test)
 
 log_loss_result <- titanic_predictions %>%
-  mn_log_loss(truth = Survived, .pred_1)
+  mn_log_loss(truth = Survived, .pred_0)
 
 actual <- as.numeric(titanic_predictions$Survived)
-predicted <- titanic_predictions$.pred_1
+predicted <- titanic_predictions$.pred_0
 
 
-log_loss_manual <- function(actual, predicted,epsilon = 1e-15) { 
+log_loss_manual <- function(actual, predicted, epsilon = 1e-15) { 
   predicted <- pmax(pmin(predicted, 1 - epsilon), epsilon)
   M <- length(actual) 
   log_loss <- - (1 / M) * sum(actual * log(predicted) + (1 - actual)*log(1-predicted))
@@ -170,7 +170,7 @@ Use the fitted model from question (a.) to perform permutation feature importanc
 
 baseline_preds <- predict(final_fit, titanic_test, type = "prob") %>% bind_cols(titanic_test)
 baseline_loss <- baseline_preds %>%
-  mn_log_loss(truth = Survived, .pred_1) %>%
+  mn_log_loss(truth = Survived, .pred_0) %>%
   pull(.estimate)
 
 
@@ -190,7 +190,7 @@ for (col in specified_predictors) {
       bind_cols(permuted_test)
     
     permuted_loss <- permuted_preds %>%
-      mn_log_loss(truth = Survived, .pred_1) %>%
+      mn_log_loss(truth = Survived, .pred_0) %>%
       pull(.estimate)
     
     losses[i] <- permuted_loss - baseline_loss
@@ -237,7 +237,7 @@ permute_fit <- function(train_data, test_data, final_workflow, col, M = 10) {
       bind_cols(test_data)
     
     permuted_loss <- permuted_preds %>%
-      mn_log_loss(truth = Survived, .pred_1) %>%
+      mn_log_loss(truth = Survived, .pred_0) %>%
       pull(.estimate)
     
     losses[i] <- permuted_loss
@@ -249,7 +249,7 @@ permute_fit <- function(train_data, test_data, final_workflow, col, M = 10) {
 final_fit <- final_workflow %>% fit(data = titanic_train)
 baseline_preds <- predict(final_fit, titanic_test, type = "prob") %>% bind_cols(titanic_test)
 baseline_loss <- baseline_preds %>%
-  mn_log_loss(truth = Survived, .pred_1) %>%
+  mn_log_loss(truth = Survived, .pred_0) %>%
   pull(.estimate)
 
 set.seed(666)
@@ -388,7 +388,7 @@ Redo Method 2 (problem 1d) on the new data/model and produce a boxplot of import
 ```{r}
 baseline_preds <- predict(final_fit, titanic_test, type = "prob") %>% bind_cols(titanic_test)
 baseline_loss <- baseline_preds %>%
-  mn_log_loss(truth = Survived, .pred_1) %>%
+  mn_log_loss(truth = Survived, .pred_0) %>%
   pull(.estimate)
 
 
@@ -408,7 +408,7 @@ for (col in specified_predictors) {
       bind_cols(permuted_test)
     
     permuted_loss <- permuted_preds %>%
-      mn_log_loss(truth = Survived, .pred_1) %>%
+      mn_log_loss(truth = Survived, .pred_0) %>%
       pull(.estimate)
     
     losses[i] <- permuted_loss - baseline_loss
@@ -453,7 +453,7 @@ permute_fit <- function(train_data, test_data, final_workflow, col, M = 10) {
       bind_cols(test_data)
     
     permuted_loss <- permuted_preds %>%
-      mn_log_loss(truth = Survived, .pred_1) %>%
+      mn_log_loss(truth = Survived, .pred_0) %>%
       pull(.estimate)
     
     losses[i] <- permuted_loss
@@ -465,7 +465,7 @@ permute_fit <- function(train_data, test_data, final_workflow, col, M = 10) {
 final_fit <- final_workflow %>% fit(data = titanic_train)
 baseline_preds <- predict(final_fit, titanic_test, type = "prob") %>% bind_cols(titanic_test)
 baseline_loss <- baseline_preds %>%
-  mn_log_loss(truth = Survived, .pred_1) %>%
+  mn_log_loss(truth = Survived, .pred_0) %>%
   pull(.estimate)
 
 set.seed(666)
