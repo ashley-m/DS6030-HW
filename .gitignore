@@ -1,4 +1,5 @@
 Readme.txt
+_extensions*
 
 # Solutions
 *soln.html
@@ -6,9 +7,11 @@ exam-final*
 ashley_miller_666*
 hw0*
 
-# excel files
+# excel files and data
 *.xls
 *.xlx
+*.csv
+*.txt
 
 # History files
 .Rhistory
@@ -32,6 +35,7 @@ hw0*
 
 # RStudio files
 .Rproj.user/
+*.Rproj
 
 # produced vignettes
 vignettes/*.html
